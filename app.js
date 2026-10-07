@@ -37,6 +37,14 @@ let state = loadState();
 let pendingText = '';
 let pendingStart = null;
 let pendingEnd = null;
+let pendingPassageId = '';
+let tapAnchor = null;
+let tapRangeComplete = false;
+// iPad can request the desktop site. Touch capability, not viewport width or UA,
+// determines the default; either mode remains available on every device.
+let tapWordsEnabled = typeof state.settings.tapWordsEnabled === 'boolean'
+  ? state.settings.tapWordsEnabled
+  : navigator.maxTouchPoints > 0;
 let passageEditingId = '';
 let revealedCardId = '';
 const $ = id => document.getElementById(id);
@@ -75,10 +83,56 @@ function resetSelectionHint() {
   pendingText = '';
   pendingStart = null;
   pendingEnd = null;
-  const hint = $('selectionHint');
-  hint.disabled = true;
-  hint.classList.remove('is-action');
-  hint.innerHTML = '<span aria-hidden="true">↗</span> Select text to save it · on iPad, touch and hold';
+  pendingPassageId = '';
+  tapAnchor = null;
+  tapRangeComplete = false;
+  cancelSelectionCapture();
+  // Native Safari may expose its selection only when the user touches this action.
+  // Keep it tappable so we can capture then, rather than trapping users on a disabled button.
+  $('selectionHint').disabled = tapWordsEnabled;
+  $('selectionHint').textContent = 'Add to flashcards';
+  $('selectionActions').classList.remove('is-active');
+  $('selectionSummary').textContent = 'No words selected';
+  $('clearSelectionBtn').hidden = true;
+  document.querySelectorAll('.tap-selected').forEach(word => {
+    word.classList.remove('tap-selected');
+    word.setAttribute('aria-pressed', 'false');
+  });
+}
+
+function syncSelectionMode() {
+  $('tapWordsMode').setAttribute('aria-pressed', String(tapWordsEnabled));
+  $('nativeSelectionMode').setAttribute('aria-pressed', String(!tapWordsEnabled));
+  $('readingText').classList.toggle('tap-words-mode', tapWordsEnabled);
+  $('selectionInstructions').textContent = tapWordsEnabled
+    ? 'Tap a word, or tap the first and last words of a phrase. Then tap Add to flashcards. Tap a saved highlight to edit it.'
+    : 'Touch and hold a word, then adjust the handles. Tap Add to flashcards below. If selection handles do not work, choose Tap words.';
+}
+
+function setSelectionMode(tapEnabled) {
+  tapWordsEnabled = tapEnabled;
+  state.settings.tapWordsEnabled = tapEnabled;
+  resetSelectionHint();
+  window.getSelection()?.removeAllRanges();
+  syncSelectionMode();
+  const passage = activePassage();
+  if (passage) renderPassageText(passage);
+  save();
+}
+
+function renderSelectableText(text, offset, saved = false) {
+  if (!tapWordsEnabled) return escapeHtml(text);
+  const wordPattern = /[\p{L}\p{M}\p{N}]+(?:[’'-][\p{L}\p{M}\p{N}]+)*/gu;
+  let output = '';
+  let cursor = 0;
+  for (const match of text.matchAll(wordPattern)) {
+    output += escapeHtml(text.slice(cursor, match.index));
+    const start = offset + match.index;
+    const controls = saved ? '' : ' role="button" tabindex="0" aria-pressed="false"';
+    output += `<span class="reading-word" data-start="${start}" data-end="${start + match[0].length}"${controls}>${escapeHtml(match[0])}</span>`;
+    cursor = match.index + match[0].length;
+  }
+  return output + escapeHtml(text.slice(cursor));
 }
 
 function renderPassageText(passage) {
@@ -96,17 +150,26 @@ function renderPassageText(passage) {
   highlights.forEach(highlight => {
     // Ignore overlapping or stale ranges so a damaged highlight cannot break the reading text.
     if (highlight.start < cursor) return;
-    output += escapeHtml(passage.text.slice(cursor, highlight.start));
-    output += `<mark data-id="${escapeHtml(highlight.id)}" title="Click to edit this saved expression">${escapeHtml(passage.text.slice(highlight.start, highlight.end))}</mark>`;
+    output += renderSelectableText(passage.text.slice(cursor, highlight.start), cursor);
+    output += `<mark data-id="${escapeHtml(highlight.id)}" role="button" tabindex="0" aria-label="Edit saved expression: ${escapeHtml(highlight.phrase)}" title="Tap to edit this saved expression">${renderSelectableText(passage.text.slice(highlight.start, highlight.end), highlight.start, true)}</mark>`;
     cursor = highlight.end;
   });
-  output += escapeHtml(passage.text.slice(cursor));
+  output += renderSelectableText(passage.text.slice(cursor), cursor);
   $('readingText').innerHTML = output;
 }
 
 function render() {
   const passage = activePassage();
   syncFarsiControls();
+  syncSelectionMode();
+  $('passageTotal').textContent = `(${state.passages.length})`;
+  $('passageSelect').innerHTML = state.passages.length
+    ? state.passages.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)}</option>`).join('')
+    : '<option value="">No saved passages</option>';
+  $('passageSelect').value = passage?.id || '';
+  $('passageSelect').disabled = !passage;
+  $('tapWordsMode').disabled = !passage;
+  $('nativeSelectionMode').disabled = !passage;
   $('passageList').innerHTML = state.passages.length
     ? state.passages.map(item => `<button class="passage-item ${item.id === passage?.id ? 'active' : ''}" type="button" data-passage="${escapeHtml(item.id)}"><strong>${escapeHtml(item.title)}</strong><span>${item.highlights.length} saved · ${countWords(item.text)} words</span></button>`).join('')
     : '<p class="passage-list-empty">No passages yet. Create one to get started.</p>';
@@ -115,6 +178,7 @@ function render() {
   $('navCount').textContent = savedCount;
   $('clearHighlights').disabled = !passage || !passage.highlights.length;
   $('passageMenuToggle').disabled = !passage;
+  $('editPassageBtn').disabled = !passage;
   resetSelectionHint();
 
   if (!passage) {
@@ -238,9 +302,7 @@ function renderFlashcardTranslations(highlight) {
     : '';
   const missingFarsi = isFarsiEnabled && !farsi;
   const needsEnglish = !english;
-  const helpButton = needsEnglish || missingFarsi
-    ? `<button class="translation-edit-action" type="button" data-action="edit-highlight" data-highlight="${escapeHtml(highlight.id)}">Add ${needsEnglish ? 'English' : 'Farsi'} translation</button>`
-    : '';
+  const helpButton = `<button class="translation-edit-action" type="button" data-action="edit-highlight" data-highlight="${escapeHtml(highlight.id)}">${needsEnglish ? 'Add English translation' : (missingFarsi ? 'Add Farsi translation' : 'Edit translations & notes')}</button>`;
   return `<section class="translation-pair ${isFarsiEnabled ? 'with-farsi' : ''}" aria-label="Translations"><div class="translation-language" lang="en"><b>English</b><span>${escapeHtml(english || 'Full translation not added yet.')}</span></div>${farsiMarkup}</section>${helpButton}`;
 }
 
@@ -469,6 +531,8 @@ function syncFarsiControls() {
     toggle.setAttribute('aria-label', enabled ? 'Hide Farsi translations' : 'Show Farsi translations');
     toggle.classList.toggle('active', enabled);
   }
+  $('farsiStatus').textContent = enabled ? 'on' : 'off';
+  $('modalFarsiToggle').checked = enabled;
   const field = $('farsiTranslationField');
   if (field) field.hidden = !enabled;
 }
@@ -478,12 +542,13 @@ function migrateSavedTranslations() {
   let phrasesNeedingReview = 0;
   state.passages.forEach(passage => passage.highlights.forEach(highlight => {
     if (highlight.translationVersion === 2) return;
-    // Previous suggestions were assembled word by word. Rebuild only from a full
-    // phrase match or a known single word, leaving other phrases for a real translation.
+    // Fill missing translations from exact matches; flag uncertain legacy phrases
+    // for review without discarding existing user-entered translations.
     const previousTranslation = String(highlight.translation || '').trim();
-    highlight.translation = offerTranslation(highlight.phrase);
+    // Never erase a user's saved translation during an app update.
+    highlight.translation = previousTranslation || offerTranslation(highlight.phrase);
     highlight.translationFa = highlight.translationFa || suggestFarsiTranslation(highlight.phrase);
-    if (previousTranslation && !highlight.translation) phrasesNeedingReview += 1;
+    if (previousTranslation && countWords(highlight.phrase) > 1 && !offerTranslation(highlight.phrase)) phrasesNeedingReview += 1;
     highlight.translationVersion = 2;
     changed = true;
   }));
@@ -491,10 +556,54 @@ function migrateSavedTranslations() {
   return phrasesNeedingReview;
 }
 
+let dialogReturnFocus = null;
+function openDialog(id, headingId) {
+  cancelSelectionCapture();
+  dialogReturnFocus = document.activeElement;
+  $(id).classList.add('open');
+  document.body.classList.add('dialog-open');
+  document.querySelector('.shell').inert = true;
+  // Focus the heading, not a text field: don't cover the dialog with a tablet keyboard.
+  $(headingId).focus({ preventScroll: true });
+}
+
+function closeDialog(id) {
+  $(id).classList.remove('open');
+  document.body.classList.remove('dialog-open');
+  document.querySelector('.shell').inert = false;
+  if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus({ preventScroll: true });
+}
+
+document.addEventListener('keydown', event => {
+  const dialog = document.querySelector('.modal-backdrop.open');
+  if (!dialog) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    if (dialog.id === 'highlightModal') closeHighlightModal();
+    else closePassageModal();
+  }
+  if (event.key === 'Tab') {
+    const controls = [...dialog.querySelectorAll('button, input, textarea, [tabindex="0"]')]
+      .filter(element => !element.disabled && element.getClientRects().length);
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+});
+
 function openHighlightModal(text, options = {}) {
   pendingText = text.trim();
   pendingStart = Number.isInteger(options.start) ? options.start : null;
   pendingEnd = Number.isInteger(options.end) ? options.end : null;
+  pendingPassageId = activePassage()?.id || '';
+  $('modalTitle').textContent = options.editId ? 'Edit saved expression' : 'Save this expression';
+  $('saveHighlight').textContent = options.editId ? 'Save changes' : 'Save expression ↗';
   $('selectedExpression').textContent = pendingText;
   $('translationSuggestion').value = Object.prototype.hasOwnProperty.call(options, 'translation')
     ? options.translation
@@ -507,19 +616,13 @@ function openHighlightModal(text, options = {}) {
   if (options.editId) $('saveHighlight').dataset.edit = options.editId;
   else delete $('saveHighlight').dataset.edit;
   syncFarsiControls();
-  $('highlightModal').classList.add('open');
-  setTimeout(() => {
-    const focusTarget = !$('translationSuggestion').value.trim()
-      ? $('translationSuggestion')
-      : (state.settings.farsiEnabled && !$('farsiTranslationInput').value.trim()
-        ? $('farsiTranslationInput')
-        : $('explanationInput'));
-    focusTarget.focus();
-  }, 50);
+  openDialog('highlightModal', 'modalTitle');
 }
 
 function closeHighlightModal(reset = true) {
-  $('highlightModal').classList.remove('open');
+  cancelSelectionCapture();
+  window.getSelection()?.removeAllRanges();
+  closeDialog('highlightModal');
   delete $('saveHighlight').dataset.edit;
   if (reset) resetSelectionHint();
 }
@@ -531,6 +634,8 @@ function showToast(message) {
 }
 
 function switchView(view) {
+  resetSelectionHint();
+  window.getSelection()?.removeAllRanges();
   document.querySelectorAll('.view').forEach(element => element.classList.toggle('active', element.id === `${view}View`));
   document.querySelectorAll('.nav-link').forEach(element => element.classList.toggle('active', element.dataset.view === view));
   if (view === 'review') renderReview();
@@ -543,45 +648,120 @@ function domPointToTextOffset(root, node, offset) {
   return range.toString().length;
 }
 
+function setPendingSelection(start, end) {
+  const passage = activePassage();
+  if (!passage || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > passage.text.length || end <= start) return;
+  const selected = passage.text.slice(start, end);
+  const phrase = selected.trim();
+  if (!phrase) return;
+  start += selected.length - selected.trimStart().length;
+  end = start + phrase.length;
+  pendingText = phrase;
+  pendingStart = start;
+  pendingEnd = end;
+  pendingPassageId = passage.id;
+  const exact = passage.highlights.find(item => item.start === start && item.end === end);
+  const overlap = passage.highlights.some(item => start < item.end && end > item.start);
+  $('selectionSummary').textContent = `“${phrase.length > 90 ? `${phrase.slice(0, 90)}…` : phrase}”${overlap && !exact ? ' — overlaps a saved expression. Clear and select unsaved words.' : ''}`;
+  $('selectionHint').textContent = exact ? 'Edit saved expression' : 'Add to flashcards';
+  $('selectionHint').disabled = tapWordsEnabled && overlap && !exact;
+  $('selectionHint').hidden = false;
+  $('selectionActions').classList.add('is-active');
+  $('clearSelectionBtn').hidden = false;
+  // Do not replace article DOM here: doing so destroys native selection handles.
+  $('readingText').querySelectorAll('.reading-word').forEach(word => {
+    const selectedWord = Number(word.dataset.start) >= start && Number(word.dataset.end) <= end;
+    word.classList.toggle('tap-selected', selectedWord);
+    if (word.getAttribute('role') === 'button') word.setAttribute('aria-pressed', String(selectedWord));
+  });
+}
+
 function captureReadingSelection() {
+  if (tapWordsEnabled || document.querySelector('.modal-backdrop.open') || !$('readerView').classList.contains('active')) return;
   const passage = activePassage();
   const root = $('readingText');
   const selection = window.getSelection();
   if (!passage || !selection || !selection.rangeCount) return;
-
-  const range = selection.getRangeAt(0);
-  if (range.collapsed || !root.contains(range.startContainer) || !root.contains(range.endContainer)) return;
-
   try {
-    let start = domPointToTextOffset(root, range.startContainer, range.startOffset);
-    let end = domPointToTextOffset(root, range.endContainer, range.endOffset);
-    if (end < start) [start, end] = [end, start];
-    const selected = passage.text.slice(start, end);
-    const leadingWhitespace = selected.length - selected.trimStart().length;
-    const phrase = selected.trim();
-    if (!phrase) return;
-
-    start += leadingWhitespace;
-    end = start + phrase.length;
-    pendingText = phrase;
-    pendingStart = start;
-    pendingEnd = end;
-    const displayText = phrase.length > 34 ? `${phrase.slice(0, 34)}…` : phrase;
-    const hint = $('selectionHint');
-    hint.innerHTML = `<span aria-hidden="true">✦</span> Save “${escapeHtml(displayText)}” for review`;
-    hint.disabled = false;
-    hint.hidden = false;
-    hint.classList.add('is-action');
+    const range = selection.getRangeAt(0);
+    // A tap on the save button can collapse an iPad selection before click fires.
+    // Keep the last valid offsets until saved, cleared, or the passage changes.
+    if (range.collapsed || !root.contains(range.startContainer) || !root.contains(range.endContainer)) return;
+    const start = domPointToTextOffset(root, range.startContainer, range.startOffset);
+    const end = domPointToTextOffset(root, range.endContainer, range.endOffset);
+    setPendingSelection(Math.min(start, end), Math.max(start, end));
   } catch (error) {
-    // Safari can briefly expose a stale selection while its selection handles move.
+    // Safari can briefly expose a stale range while its selection handles move.
   }
 }
 
+let selectionCaptureTimers = [];
+let selectionCaptureGeneration = 0;
+function cancelSelectionCapture() {
+  selectionCaptureGeneration += 1;
+  selectionCaptureTimers.forEach(clearTimeout);
+  selectionCaptureTimers = [];
+}
 function scheduleSelectionCapture() {
-  // iOS Safari updates its selection after touchend; the selectionchange listener is
-  // the main path, and these delayed checks cover the browser's touch/drag timing.
-  setTimeout(captureReadingSelection, 0);
-  setTimeout(captureReadingSelection, 80);
+  cancelSelectionCapture();
+  if (tapWordsEnabled || document.querySelector('.modal-backdrop.open') || !$('readerView').classList.contains('active')) return;
+  const generation = selectionCaptureGeneration;
+  // Native selection can settle after touchend or after a selection-handle drag
+  // outside the article. Listen on document as well as selectionchange.
+  selectionCaptureTimers = [0, 100, 350, 700].map(delay => setTimeout(() => {
+    if (generation === selectionCaptureGeneration) captureReadingSelection();
+  }, delay));
+}
+
+function selectTappedWord(word) {
+  const start = Number(word.dataset.start);
+  const end = Number(word.dataset.end);
+  if (!tapAnchor || tapRangeComplete) {
+    tapAnchor = { start, end };
+    tapRangeComplete = false;
+    setPendingSelection(start, end);
+  } else if (tapAnchor.start === start && tapAnchor.end === end) {
+    resetSelectionHint();
+  } else {
+    setPendingSelection(Math.min(tapAnchor.start, start), Math.max(tapAnchor.end, end));
+    tapRangeComplete = true;
+  }
+}
+
+function openPendingSelection() {
+  if (document.querySelector('.modal-backdrop.open')) return;
+  captureReadingSelection();
+  cancelSelectionCapture();
+  const passage = activePassage();
+  if (!passage || passage.id !== pendingPassageId || !pendingText || passage.text.slice(pendingStart, pendingEnd) !== pendingText) {
+    resetSelectionHint();
+    showToast('Select text first, or choose Tap words and tap a word.');
+    return;
+  }
+  const exact = passage.highlights.find(item => item.start === pendingStart && item.end === pendingEnd);
+  if (exact) {
+    openHighlightModal(exact.phrase, {
+      editId: exact.id, start: exact.start, end: exact.end,
+      translation: exact.translation || '', translationFa: exact.translationFa || suggestFarsiTranslation(exact.phrase),
+      explanation: exact.explanation || ''
+    });
+  } else if (!passage.highlights.some(item => pendingStart < item.end && pendingEnd > item.start)) {
+    openHighlightModal(pendingText, { start: pendingStart, end: pendingEnd });
+  } else {
+    showToast('That selection overlaps a saved expression. Clear it and select unsaved words.');
+  }
+}
+
+function selectPassage(id) {
+  if (!state.passages.some(passage => passage.id === id)) return;
+  window.getSelection()?.removeAllRanges();
+  state.active = id;
+  state.queue = [];
+  state.repeatQueue = [];
+  state.round = 1;
+  revealedCardId = '';
+  closePassageMenu();
+  render();
 }
 
 function closePassageMenu(returnFocus = false) {
@@ -607,15 +787,14 @@ function openPassageModal(mode, passage = activePassage()) {
   $('passageNameInput').value = passageEditingId ? passage.title : '';
   $('passageTextInput').value = passageEditingId ? passage.text : '';
   $('passageModalEyebrow').textContent = passageEditingId ? 'EDIT YOUR PASSAGE' : 'BUILD YOUR READING STUDIO';
-  $('passageModalTitle').textContent = passageEditingId ? 'Make it your own.' : 'Add a passage.';
+  $('passageModalTitle').textContent = passageEditingId ? 'Edit passage name & text' : 'Add a passage.';
   $('savePassageButton').textContent = passageEditingId ? 'Save changes' : 'Create passage';
   closePassageMenu();
-  $('passageModal').classList.add('open');
-  setTimeout(() => $('passageNameInput').focus(), 50);
+  openDialog('passageModal', 'passageModalTitle');
 }
 
 function closePassageModal() {
-  $('passageModal').classList.remove('open');
+  closeDialog('passageModal');
   passageEditingId = '';
 }
 
@@ -729,18 +908,14 @@ document.addEventListener('click', event => {
 
   const passageItem = event.target.closest('[data-passage]');
   if (passageItem) {
-    state.active = passageItem.dataset.passage;
-    state.queue = [];
-    state.repeatQueue = [];
-    state.round = 1;
-    revealedCardId = '';
-    closePassageMenu();
-    render();
+    selectPassage(passageItem.dataset.passage);
     return;
   }
 
   const mark = event.target.closest('mark[data-id]');
   if (mark) {
+    // Moving touch selection handles across an existing highlight is not an edit tap.
+    if (!tapWordsEnabled && window.getSelection()?.toString().trim()) return;
     const highlight = activePassage()?.highlights.find(item => item.id === mark.dataset.id);
     if (highlight) {
       openHighlightModal(highlight.phrase, {
@@ -755,6 +930,11 @@ document.addEventListener('click', event => {
     return;
   }
 
+  const word = event.target.closest('#readingText .reading-word');
+  if (tapWordsEnabled && word) {
+    selectTappedWord(word);
+    return;
+  }
   if (!event.target.closest('.passage-menu-wrap')) closePassageMenu();
 });
 
@@ -762,12 +942,33 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !$('passageMenu').hidden) closePassageMenu(true);
 });
 
-$('readingText').addEventListener('mouseup', scheduleSelectionCapture);
-$('readingText').addEventListener('pointerup', scheduleSelectionCapture);
-$('readingText').addEventListener('touchend', scheduleSelectionCapture, { passive: true });
+document.addEventListener('pointerup', scheduleSelectionCapture);
+document.addEventListener('touchend', scheduleSelectionCapture, { passive: true });
 document.addEventListener('selectionchange', captureReadingSelection);
-$('selectionHint').addEventListener('click', () => {
-  if (pendingText) openHighlightModal(pendingText, { start: pendingStart, end: pendingEnd });
+$('selectionHint').addEventListener('pointerdown', event => {
+  captureReadingSelection();
+  // Keep the native range until click. Opening on pointerup can retarget the
+  // compatibility click to the newly opened backdrop and close the editor.
+  if (event.cancelable) event.preventDefault();
+});
+$('selectionHint').addEventListener('touchstart', captureReadingSelection, { passive: true });
+$('selectionHint').addEventListener('mousedown', event => {
+  captureReadingSelection();
+  event.preventDefault(); // Preserve the native range while the button is pressed.
+});
+$('selectionHint').addEventListener('click', openPendingSelection);
+$('clearSelectionBtn').addEventListener('click', () => {
+  resetSelectionHint();
+  window.getSelection()?.removeAllRanges();
+});
+$('tapWordsMode').addEventListener('click', () => setSelectionMode(true));
+$('nativeSelectionMode').addEventListener('click', () => setSelectionMode(false));
+$('passageSelect').addEventListener('change', event => selectPassage(event.target.value));
+$('readingText').addEventListener('keydown', event => {
+  if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[role="button"]')) {
+    event.preventDefault();
+    event.target.click();
+  }
 });
 
 $('saveHighlight').addEventListener('click', () => {
@@ -841,23 +1042,35 @@ $('saveHighlight').addEventListener('click', () => {
 });
 
 ['closeModal', 'cancelModal'].forEach(id => $(id).addEventListener('click', () => closeHighlightModal()));
-$('highlightModal').addEventListener('click', event => {
-  if (event.target.id === 'highlightModal') closeHighlightModal();
-});
-$('farsiToggle').addEventListener('click', () => {
-  state.settings.farsiEnabled = !state.settings.farsiEnabled;
+function dismissOnBackdropGesture(id, close) {
+  const backdrop = $(id);
+  let beganOnBackdrop = false;
+  backdrop.addEventListener('pointerdown', event => { beganOnBackdrop = event.target === backdrop; });
+  backdrop.addEventListener('pointercancel', () => { beganOnBackdrop = false; });
+  backdrop.addEventListener('click', event => {
+    // A drag from the dialog, or the click that opened it, must not dismiss it.
+    if (event.target === backdrop && beganOnBackdrop) close();
+    beganOnBackdrop = false;
+  });
+}
+dismissOnBackdropGesture('highlightModal', closeHighlightModal);
+function setFarsiEnabled(enabled) {
+  state.settings.farsiEnabled = enabled;
+  if (enabled && $('highlightModal').classList.contains('open') && !$('farsiTranslationInput').value.trim()) {
+    $('farsiTranslationInput').value = suggestFarsiTranslation(pendingText);
+  }
   syncFarsiControls();
   if ($('reviewView').classList.contains('active')) renderReview();
   save();
-});
+}
+$('farsiToggle').addEventListener('click', () => setFarsiEnabled(!state.settings.farsiEnabled));
+$('modalFarsiToggle').addEventListener('change', event => setFarsiEnabled(event.target.checked));
 
 $('newPassageBtn').addEventListener('click', () => openPassageModal('new'));
 $('newPassageBtnSmall').addEventListener('click', () => openPassageModal('new'));
 $('closePassageModal').addEventListener('click', closePassageModal);
 $('cancelPassageModal').addEventListener('click', closePassageModal);
-$('passageModal').addEventListener('click', event => {
-  if (event.target.id === 'passageModal') closePassageModal();
-});
+dismissOnBackdropGesture('passageModal', closePassageModal);
 $('passageForm').addEventListener('submit', event => {
   event.preventDefault();
   const title = $('passageNameInput').value.trim();
