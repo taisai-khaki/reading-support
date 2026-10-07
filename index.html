@@ -17,6 +17,10 @@
         <button class="nav-link active" data-view="reader">Reader</button>
         <button class="nav-link" data-view="review">Flashcards <span class="nav-count" id="navCount">0</span></button>
       </nav>
+      <button class="language-toggle" id="farsiToggle" type="button" role="switch" aria-checked="false" aria-label="Show Farsi translations">
+        <span class="language-toggle-track" aria-hidden="true"><i></i></span>
+        <span class="language-toggle-copy"><strong>Farsi</strong><small lang="fa" dir="rtl">فارسی</small></span>
+      </button>
       <div class="header-actions"><button class="icon-button" aria-label="Help">?</button><div class="avatar">AM</div></div>
     </header>
 
@@ -33,8 +37,8 @@
             <div class="sidebar-tip"><span>✧</span><div><strong>A small ritual</strong><p>Highlight only what you want to remember. A few words at a time is plenty.</p></div></div>
           </aside>
           <section class="reading-card">
-            <div class="reading-toolbar"><div class="passage-meta"><span class="language-pill">ES</span><span id="passageTitle">La casa de la abuela</span><span class="muted">·</span><span class="muted" id="wordCount">0 words</span></div><div class="toolbar-actions"><button class="text-button" id="clearHighlights">Clear highlights</button><button class="more-button">•••</button></div></div>
-            <div class="selection-hint" id="selectionHint"><span>↗</span> Select any word or expression to save it</div>
+            <div class="reading-toolbar"><div class="passage-meta"><span class="language-pill">ES</span><span id="passageTitle">La casa de la abuela</span><span class="muted">·</span><span class="muted" id="wordCount">0 words</span></div><div class="toolbar-actions"><button class="text-button" id="clearHighlights" type="button">Clear highlights</button><div class="passage-menu-wrap"><button class="more-button" id="passageMenuToggle" type="button" aria-label="Passage options" aria-haspopup="true" aria-expanded="false" aria-controls="passageMenu" data-passage-action="toggle-menu">•••</button><div class="passage-menu" id="passageMenu" hidden><button type="button" data-passage-action="edit">Edit passage</button><button type="button" class="delete-passage-action" data-passage-action="delete">Delete passage</button></div></div></div></div>
+            <button class="selection-hint" id="selectionHint" type="button" disabled><span aria-hidden="true">↗</span> Select text to save it · on iPad, touch and hold</button>
             <article class="reading-text" id="readingText" tabindex="0"></article>
             <div class="reader-footer"><span><span class="legend-mark"></span> Saved for review</span><span id="highlightCount">0 saved</span></div>
           </section>
@@ -56,8 +60,11 @@
     </main>
   </div>
 
-  <div class="modal-backdrop" id="highlightModal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><button class="modal-close" id="closeModal">×</button><p class="eyebrow">ADD TO YOUR REVIEW</p><h2 id="modalTitle">Save this expression</h2><div class="selected-expression" id="selectedExpression"></div><label>English translation <span class="app-label">✦ suggested by Lumbre</span><div class="translation-suggestion" id="translationSuggestion">Translating…</div></label><label>Your notes <span class="optional">optional</span><textarea id="explanationInput" rows="3" placeholder="Add a memory, example, or explanation..." ></textarea></label><div class="modal-footer"><button class="text-button" id="cancelModal">Cancel</button><button class="primary-button" id="saveHighlight">Save expression <span>↗</span></button></div></div></div>
-  <div class="toast" id="toast"></div>
+  <div class="modal-backdrop" id="highlightModal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><button class="modal-close" id="closeModal" type="button" aria-label="Close">×</button><p class="eyebrow">ADD TO YOUR REVIEW</p><h2 id="modalTitle">Save this expression</h2><div class="selected-expression" id="selectedExpression"></div><label for="translationSuggestion">English translation <span class="app-label">✦ phrase-level suggestions</span><textarea class="translation-input" id="translationSuggestion" rows="3" placeholder="Enter the full expression or sentence meaning..." required></textarea><span class="translation-helper" id="englishTranslationHelp">Suggestions use the full expression when an exact match is available. Otherwise, add a full-context translation.</span></label><div class="farsi-translation-field" id="farsiTranslationField" hidden><label for="farsiTranslationInput">Farsi translation <span class="app-label" lang="fa" dir="rtl">فارسی</span><textarea class="translation-input farsi-translation-input" id="farsiTranslationInput" rows="3" lang="fa" dir="rtl" placeholder="ترجمهٔ کامل عبارت یا جمله را وارد کنید..."></textarea><span class="translation-helper" id="farsiTranslationHelp">Add the complete Farsi translation. It will appear beside English while Farsi is enabled.</span></label></div><label>Your notes <span class="optional">optional</span><textarea id="explanationInput" rows="3" placeholder="Add a memory, example, or explanation..." ></textarea></label><div class="modal-footer"><button class="text-button" id="cancelModal" type="button">Cancel</button><button class="primary-button" id="saveHighlight" type="button">Save expression <span>↗</span></button></div></div></div>
+
+  <div class="modal-backdrop" id="passageModal"><div class="modal passage-modal" role="dialog" aria-modal="true" aria-labelledby="passageModalTitle"><button class="modal-close" id="closePassageModal" type="button" aria-label="Close">×</button><p class="eyebrow" id="passageModalEyebrow">BUILD YOUR READING STUDIO</p><h2 id="passageModalTitle">Add a passage.</h2><form id="passageForm"><label for="passageNameInput">Passage name<input id="passageNameInput" name="title" type="text" maxlength="100" placeholder="A short, helpful title" required></label><label for="passageTextInput">Spanish text<textarea id="passageTextInput" name="text" rows="9" placeholder="Paste or type the passage you want to read..." required></textarea></label><div class="modal-footer"><button class="text-button" id="cancelPassageModal" type="button">Cancel</button><button class="primary-button" id="savePassageButton" type="submit">Create passage</button></div></form></div></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="verb-analysis.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
