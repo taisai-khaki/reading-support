@@ -107,3 +107,72 @@
   .selected-expression{max-height:120px}
 }
 .translation-pair:not(.with-farsi){grid-template-columns:1fr}
+
+/* Keep the same capabilities visible on desktop, tablet and phone. */
+button { touch-action: manipulation; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+.reading-card, .passage-sidebar, .flashcard-area, .review-sidebar { min-width: 0; }
+.reading-toolbar { height: auto; min-height: 65px; flex-wrap: wrap; gap: 8px 16px; padding-top: 10px; padding-bottom: 10px; }
+.passage-meta { min-width: 0; flex: 1 1 240px; flex-wrap: wrap; }
+#passageTitle { overflow-wrap: anywhere; }
+.toolbar-actions { flex-shrink: 0; gap: 10px; }
+.edit-passage-button { font-size: 12px; color: var(--deep); white-space: nowrap; }
+.language-toggle, .nav-link, .more-button, .text-button, .reveal-button, .translation-edit-action, .plus-small, .modal-close { min-height: 44px; }
+.more-button, .plus-small, .modal-close { min-width: 44px; }
+.passage-menu button { min-height: 44px; }
+.language-toggle-copy strong { font-size: 12px; }
+#farsiStatus { color: var(--orange); }
+.app-version { padding: 0 5.5% 24px; color: #63766e; font-size: 11px; text-align: center; line-height: 1.6; }
+.modal label.farsi-modal-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 13px; color: var(--deep); cursor: pointer; }
+.modal .farsi-modal-toggle input { width: 20px; height: 20px; margin: 0; accent-color: var(--green); }
+.dialog-open { overflow: hidden; }
+.modal { max-height: calc(100dvh - 40px); overscroll-behavior: contain; }
+.modal input, .modal textarea { font-size: 16px; }
+.reading-text, .card-word, .passage-item strong { overflow-wrap: anywhere; }
+.selection-hint.is-action { position: fixed; z-index: 4; bottom: max(18px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); margin: 0; width: max-content; max-width: calc(100% - 32px); min-height: 48px; border: 1px solid #d4b575; box-shadow: 0 4px 20px #193b3a26; font-size: 13px; white-space: normal; }
+@media (max-width: 1100px) {
+  .reader-layout { grid-template-columns: 180px minmax(0, 1fr); gap: 24px; }
+  .review-layout { grid-template-columns: minmax(0, 1fr) 240px; gap: 24px; }
+}
+@media (max-width: 850px) {
+  .reader-layout, .review-layout { grid-template-columns: minmax(0, 1fr); }
+  .passage-sidebar { display: block; }
+  .sidebar-tip { display: none; }
+  .side-label { padding-bottom: 8px; align-items: center; }
+  #passageList { display: flex; overflow-x: auto; gap: 8px; padding: 4px; }
+  .passage-item { flex: 0 0 210px; border: 1px solid var(--line); border-radius: 4px; }
+  .passage-item.active { border-left: 3px solid var(--orange); }
+  .reading-toolbar .toolbar-actions { display: flex; }
+  .selection-hint { margin-right: 25px; line-height: 1.5; }
+  .review-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 550px) {
+  .topbar { height: auto; min-height: 116px; padding: 10px 5% 0; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+  .brand { margin-right: 0; }
+  .main-nav { order: 3; width: 100%; height: 44px; justify-content: center; gap: 32px; }
+  .language-toggle-copy small { display: block; }
+  .page-heading h1 { font-size: 34px; }
+  .reading-toolbar { padding: 12px; }
+  .passage-meta { flex: 1 1 100%; overflow: visible; }
+  .passage-meta #passageTitle { white-space: normal; }
+  .toolbar-actions { width: 100%; justify-content: space-between; }
+  #clearHighlights { display: block; }
+  .reading-text { padding: 22px 20px 36px; }
+  .round-label { flex-wrap: wrap; gap: 10px; }
+  .round-line { flex: 1; min-width: 30px; }
+  .modal { max-height: calc(100dvh - 24px); }
+  .modal-footer { gap: 10px; flex-wrap: wrap; }
+}
+.ghost-button, .primary-button { min-height: 44px; }
+@font-face {
+  font-family: 'Lumbre Persian';
+  src: url('fonts/noto-naskh-arabic-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+[lang="fa"], .farsi-translation-input, .translation-language.farsi-translation, .language-toggle-copy small {
+  font-family: 'Lumbre Persian', Tahoma, sans-serif !important;
+}
+.farsi-translation span { font-size: 18px; }
+.page-heading > .ghost-button { flex-shrink: 0; white-space: nowrap; }

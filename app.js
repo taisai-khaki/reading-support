@@ -97,7 +97,7 @@ function renderPassageText(passage) {
     // Ignore overlapping or stale ranges so a damaged highlight cannot break the reading text.
     if (highlight.start < cursor) return;
     output += escapeHtml(passage.text.slice(cursor, highlight.start));
-    output += `<mark data-id="${escapeHtml(highlight.id)}" title="Click to edit this saved expression">${escapeHtml(passage.text.slice(highlight.start, highlight.end))}</mark>`;
+    output += `<mark data-id="${escapeHtml(highlight.id)}" title="Tap to edit this saved expression">${escapeHtml(passage.text.slice(highlight.start, highlight.end))}</mark>`;
     cursor = highlight.end;
   });
   output += escapeHtml(passage.text.slice(cursor));
@@ -115,6 +115,7 @@ function render() {
   $('navCount').textContent = savedCount;
   $('clearHighlights').disabled = !passage || !passage.highlights.length;
   $('passageMenuToggle').disabled = !passage;
+  $('editPassageBtn').disabled = !passage;
   resetSelectionHint();
 
   if (!passage) {
@@ -238,9 +239,7 @@ function renderFlashcardTranslations(highlight) {
     : '';
   const missingFarsi = isFarsiEnabled && !farsi;
   const needsEnglish = !english;
-  const helpButton = needsEnglish || missingFarsi
-    ? `<button class="translation-edit-action" type="button" data-action="edit-highlight" data-highlight="${escapeHtml(highlight.id)}">Add ${needsEnglish ? 'English' : 'Farsi'} translation</button>`
-    : '';
+  const helpButton = `<button class="translation-edit-action" type="button" data-action="edit-highlight" data-highlight="${escapeHtml(highlight.id)}">${needsEnglish ? 'Add English translation' : (missingFarsi ? 'Add Farsi translation' : 'Edit translations & notes')}</button>`;
   return `<section class="translation-pair ${isFarsiEnabled ? 'with-farsi' : ''}" aria-label="Translations"><div class="translation-language" lang="en"><b>English</b><span>${escapeHtml(english || 'Full translation not added yet.')}</span></div>${farsiMarkup}</section>${helpButton}`;
 }
 
@@ -469,6 +468,8 @@ function syncFarsiControls() {
     toggle.setAttribute('aria-label', enabled ? 'Hide Farsi translations' : 'Show Farsi translations');
     toggle.classList.toggle('active', enabled);
   }
+  $('farsiStatus').textContent = enabled ? 'on' : 'off';
+  $('modalFarsiToggle').checked = enabled;
   const field = $('farsiTranslationField');
   if (field) field.hidden = !enabled;
 }
@@ -478,12 +479,13 @@ function migrateSavedTranslations() {
   let phrasesNeedingReview = 0;
   state.passages.forEach(passage => passage.highlights.forEach(highlight => {
     if (highlight.translationVersion === 2) return;
-    // Previous suggestions were assembled word by word. Rebuild only from a full
-    // phrase match or a known single word, leaving other phrases for a real translation.
+    // Fill missing translations from exact matches; flag uncertain legacy phrases
+    // for review without discarding existing user-entered translations.
     const previousTranslation = String(highlight.translation || '').trim();
-    highlight.translation = offerTranslation(highlight.phrase);
+    // Never erase a user's saved translation during an app update.
+    highlight.translation = previousTranslation || offerTranslation(highlight.phrase);
     highlight.translationFa = highlight.translationFa || suggestFarsiTranslation(highlight.phrase);
-    if (previousTranslation && !highlight.translation) phrasesNeedingReview += 1;
+    if (previousTranslation && countWords(highlight.phrase) > 1 && !offerTranslation(highlight.phrase)) phrasesNeedingReview += 1;
     highlight.translationVersion = 2;
     changed = true;
   }));
@@ -491,10 +493,52 @@ function migrateSavedTranslations() {
   return phrasesNeedingReview;
 }
 
+let dialogReturnFocus = null;
+function openDialog(id, headingId) {
+  dialogReturnFocus = document.activeElement;
+  $(id).classList.add('open');
+  document.body.classList.add('dialog-open');
+  document.querySelector('.shell').inert = true;
+  // Focus the heading, not a text field: don't cover the dialog with a tablet keyboard.
+  $(headingId).focus({ preventScroll: true });
+}
+
+function closeDialog(id) {
+  $(id).classList.remove('open');
+  document.body.classList.remove('dialog-open');
+  document.querySelector('.shell').inert = false;
+  if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus({ preventScroll: true });
+}
+
+document.addEventListener('keydown', event => {
+  const dialog = document.querySelector('.modal-backdrop.open');
+  if (!dialog) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    if (dialog.id === 'highlightModal') closeHighlightModal();
+    else closePassageModal();
+  }
+  if (event.key === 'Tab') {
+    const controls = [...dialog.querySelectorAll('button, input, textarea, [tabindex="0"]')]
+      .filter(element => !element.disabled && element.getClientRects().length);
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+});
+
 function openHighlightModal(text, options = {}) {
   pendingText = text.trim();
   pendingStart = Number.isInteger(options.start) ? options.start : null;
   pendingEnd = Number.isInteger(options.end) ? options.end : null;
+  $('modalTitle').textContent = options.editId ? 'Edit saved expression' : 'Save this expression';
+  $('saveHighlight').textContent = options.editId ? 'Save changes' : 'Save expression ↗';
   $('selectedExpression').textContent = pendingText;
   $('translationSuggestion').value = Object.prototype.hasOwnProperty.call(options, 'translation')
     ? options.translation
@@ -507,19 +551,11 @@ function openHighlightModal(text, options = {}) {
   if (options.editId) $('saveHighlight').dataset.edit = options.editId;
   else delete $('saveHighlight').dataset.edit;
   syncFarsiControls();
-  $('highlightModal').classList.add('open');
-  setTimeout(() => {
-    const focusTarget = !$('translationSuggestion').value.trim()
-      ? $('translationSuggestion')
-      : (state.settings.farsiEnabled && !$('farsiTranslationInput').value.trim()
-        ? $('farsiTranslationInput')
-        : $('explanationInput'));
-    focusTarget.focus();
-  }, 50);
+  openDialog('highlightModal', 'modalTitle');
 }
 
 function closeHighlightModal(reset = true) {
-  $('highlightModal').classList.remove('open');
+  closeDialog('highlightModal');
   delete $('saveHighlight').dataset.edit;
   if (reset) resetSelectionHint();
 }
@@ -610,12 +646,11 @@ function openPassageModal(mode, passage = activePassage()) {
   $('passageModalTitle').textContent = passageEditingId ? 'Make it your own.' : 'Add a passage.';
   $('savePassageButton').textContent = passageEditingId ? 'Save changes' : 'Create passage';
   closePassageMenu();
-  $('passageModal').classList.add('open');
-  setTimeout(() => $('passageNameInput').focus(), 50);
+  openDialog('passageModal', 'passageModalTitle');
 }
 
 function closePassageModal() {
-  $('passageModal').classList.remove('open');
+  closeDialog('passageModal');
   passageEditingId = '';
 }
 
@@ -741,6 +776,8 @@ document.addEventListener('click', event => {
 
   const mark = event.target.closest('mark[data-id]');
   if (mark) {
+    // Moving touch selection handles across an existing highlight is not an edit tap.
+    if (window.getSelection()?.toString().trim()) return;
     const highlight = activePassage()?.highlights.find(item => item.id === mark.dataset.id);
     if (highlight) {
       openHighlightModal(highlight.phrase, {
@@ -844,12 +881,17 @@ $('saveHighlight').addEventListener('click', () => {
 $('highlightModal').addEventListener('click', event => {
   if (event.target.id === 'highlightModal') closeHighlightModal();
 });
-$('farsiToggle').addEventListener('click', () => {
-  state.settings.farsiEnabled = !state.settings.farsiEnabled;
+function setFarsiEnabled(enabled) {
+  state.settings.farsiEnabled = enabled;
+  if (enabled && $('highlightModal').classList.contains('open') && !$('farsiTranslationInput').value.trim()) {
+    $('farsiTranslationInput').value = suggestFarsiTranslation(pendingText);
+  }
   syncFarsiControls();
   if ($('reviewView').classList.contains('active')) renderReview();
   save();
-});
+}
+$('farsiToggle').addEventListener('click', () => setFarsiEnabled(!state.settings.farsiEnabled));
+$('modalFarsiToggle').addEventListener('change', event => setFarsiEnabled(event.target.checked));
 
 $('newPassageBtn').addEventListener('click', () => openPassageModal('new'));
 $('newPassageBtnSmall').addEventListener('click', () => openPassageModal('new'));
