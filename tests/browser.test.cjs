@@ -43,6 +43,7 @@ async function newPage(options = {}, state) {
     if (!localStorage.getItem('lumbre-state')) localStorage.setItem('lumbre-state', JSON.stringify(value));
   }, state);
   const page = await context.newPage();
+  page.setDefaultTimeout(8000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(url);
@@ -50,6 +51,7 @@ async function newPage(options = {}, state) {
   return { page, async close() { assert.deepEqual(errors, []); await context.close(); } };
 }
 async function selectText(page, phrase) {
+  if (await page.locator('#nativeSelectionMode').getAttribute('aria-pressed') !== 'true') await page.locator('#nativeSelectionMode').click();
   await page.evaluate(phrase => {
     const root = document.getElementById('readingText');
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -82,7 +84,7 @@ async function assertFits(page) {
 test('edit passage visibly updates the reader and persists after reload', async () => {
   const session = await newPage({ viewport: { width: 1440, height: 1000 } });
   const { page } = session;
-  await page.getByRole('button', { name: 'Edit passage', exact: true }).click();
+  await page.locator('#editPassageBtn').click();
   assert.equal(await page.locator('#passageNameInput').inputValue(), 'La casa de la abuela');
   await page.locator('#passageNameInput').fill('My edited passage');
   await page.locator('#passageTextInput').fill('Mi abuela vive en una casa.');
@@ -207,5 +209,139 @@ test('unknown phrases ask for a translation instead of inventing Farsi', async (
   await page.locator('#farsiTranslationInput').fill('به خانه');
   await page.locator('#saveHighlight').click();
   assert.equal((await getState(page)).passages[0].highlights[0].translationFa, 'به خانه');
+  await session.close();
+});
+
+test('actual touch taps save a word and a phrase without injecting a native selection', async () => {
+  // This exercises DOM touch/pointer/click activation, not a programmatic Range.
+  for (const [width, height, isMobile] of [[768, 1024, true], [1180, 820, false]]) {
+    const session = await newPage({ viewport: { width, height }, hasTouch: true, isMobile });
+    const { page } = session;
+    assert.equal(await page.locator('#tapWordsMode').getAttribute('aria-pressed'), 'true');
+    await page.locator('.reading-word').filter({ hasText: /^abuela$/ }).tap();
+    assert.equal(await page.evaluate(() => window.getSelection().toString()), '');
+    assert.equal(await page.locator('#selectionHint').isEnabled(), true);
+    assert.match(await page.locator('#selectionSummary').textContent(), /abuela/);
+    await page.locator('#selectionHint').tap();
+    assert.equal(await page.locator('#selectedExpression').textContent(), 'abuela');
+    assert.equal(await page.locator('#translationSuggestion').inputValue(), 'grandmother');
+    await page.locator('#saveHighlight').tap();
+    assert.equal((await getState(page)).passages[0].highlights[0].phrase, 'abuela');
+    await page.locator('.reading-word').filter({ hasText: /^pan$/ }).tap();
+    await page.locator('.reading-word').filter({ hasText: /^horneado$/ }).tap();
+    assert.match(await page.locator('#selectionSummary').textContent(), /pan recién horneado/);
+    await page.locator('#selectionHint').tap();
+    assert.equal(await page.locator('#translationSuggestion').inputValue(), 'freshly baked bread');
+    await page.locator('#saveHighlight').tap();
+    await page.reload();
+    assert.equal(await page.locator('#tapWordsMode').getAttribute('aria-pressed'), 'true');
+    assert.equal((await getState(page)).passages[0].highlights[1].phrase, 'pan recién horneado');
+    // Saved words still have their own edit action in tap mode.
+    await page.locator('#readingText mark').first().tap();
+    assert.equal(await page.locator('#modalTitle').textContent(), 'Edit saved expression');
+    await session.close();
+  }
+});
+
+test('tablet can switch all existing passages and edit both fields, including in landscape', async () => {
+  const state = { passages: Array.from({ length: 12 }, (_, index) => ({
+    id: `existing-${index}`, title: `Existing passage ${index + 1}`,
+    text: `Mi casa. Mi abuela. Historia ${index + 1}.`, highlights: []
+  })), active: 'existing-0', settings: {} };
+  for (const [width, height] of [[768, 1024], [1024, 768], [1366, 1024], [390, 844]]) {
+    const session = await newPage({ viewport: { width, height }, hasTouch: true, isMobile: width < 1024 }, state);
+    const { page } = session;
+    assert.equal(await page.locator('#passageSelect option').count(), 12);
+    assert.equal(await page.locator('#passageTotal').textContent(), '(12)');
+    await page.locator('#passageSelect').selectOption('existing-11');
+    assert.equal(await page.locator('#readingText').textContent(), 'Mi casa. Mi abuela. Historia 12.');
+    await page.locator('#editPassageBtn').tap();
+    assert.equal(await page.locator('#passageNameInput').inputValue(), 'Existing passage 12');
+    await page.locator('#passageNameInput').fill('Renamed on tablet');
+    await page.locator('#passageTextInput').fill('La puerta estaba entreabierta.');
+    await page.locator('#savePassageButton').tap();
+    await page.reload();
+    assert.equal(await page.locator('#passageSelect').inputValue(), 'existing-11');
+    assert.equal(await page.locator('#passageSelect option:checked').textContent(), 'Renamed on tablet');
+    assert.equal(await page.locator('#readingText').textContent(), 'La puerta estaba entreabierta.');
+    await assertFits(page);
+    if (width === 768) await page.screenshot({ path: '.artifacts/tablet-v1.2-passages.png', fullPage: true });
+    await session.close();
+  }
+});
+
+test('tap selection preserves repeated-word offsets and clears on passage change', async () => {
+  const state = { passages: [
+    { id: 'one', title: 'Repeated words', text: 'casa, casa.\n\nMi abuela.', highlights: [] },
+    { id: 'two', title: 'Other passage', text: 'casa', highlights: [] }
+  ], active: 'one', settings: {} };
+  const session = await newPage({ viewport: { width: 820, height: 1180 }, hasTouch: true }, state);
+  const { page } = session;
+  assert.equal(await page.locator('#readingText').textContent(), state.passages[0].text);
+  await page.locator('.reading-word').filter({ hasText: /^casa$/ }).nth(1).tap();
+  await page.locator('#selectionHint').tap();
+  await page.locator('#saveHighlight').tap();
+  let saved = (await getState(page)).passages[0].highlights[0];
+  assert.equal(saved.start, 6);
+  assert.equal(saved.end, 10);
+  await page.locator('.reading-word').filter({ hasText: /^abuela$/ }).tap();
+  await page.locator('#passageSelect').selectOption('two');
+  assert.equal(await page.locator('#selectionHint').isEnabled(), false);
+  assert.equal(await page.locator('#selectionSummary').textContent(), 'No words selected');
+  assert.equal((await getState(page)).passages[1].highlights.length, 0);
+  await page.locator('#nativeSelectionMode').tap();
+  await page.reload();
+  assert.equal(await page.locator('#nativeSelectionMode').getAttribute('aria-pressed'), 'true');
+  await session.close();
+});
+
+test('native selection survives collapse before save and late events cannot reopen the editor', async () => {
+  const session = await newPage({ viewport: { width: 820, height: 1180 }, hasTouch: true });
+  const { page } = session;
+  await selectText(page, 'la casa de mi abuela');
+  // Simulate native handle/callout ordering separately from real tap tests.
+  await page.evaluate(() => {
+    window.getSelection().removeAllRanges();
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await page.locator('#selectionHint').dispatchEvent('pointerdown', { pointerType: 'touch', pointerId: 4, clientX: 100, clientY: 100 });
+  await page.locator('#selectionHint').dispatchEvent('pointerup', { pointerType: 'touch', pointerId: 4, clientX: 100, clientY: 100 });
+  assert.equal(await page.locator('#highlightModal').isVisible(), false, 'do not open on pointerup and risk retargeting the click');
+  await page.locator('#selectionHint').tap();
+  assert.equal(await page.locator('#highlightModal').isVisible(), true);
+  assert.equal(await page.locator('#selectedExpression').textContent(), 'la casa de mi abuela');
+  // A following synthetic click must not overwrite edits by reopening the modal.
+  await page.locator('#translationSuggestion').fill('My custom meaning');
+  await page.locator('#selectionHint').dispatchEvent('click');
+  assert.equal(await page.locator('#translationSuggestion').inputValue(), 'My custom meaning');
+  await page.locator('#cancelModal').click();
+  await page.waitForTimeout(800); // Deliberately wait beyond deferred native selection captures.
+  assert.equal(await page.locator('#selectionSummary').textContent(), 'No words selected');
+  assert.equal(await page.locator('#highlightModal').isVisible(), false);
+  assert.equal(await page.locator('#selectionHint').isEnabled(), true, 'native save remains tappable to retry capturing selection');
+  await page.locator('#selectionHint').click();
+  assert.equal(await page.locator('#highlightModal').isVisible(), false);
+  assert.match(await page.locator('#toast').textContent(), /Tap words/);
+  await session.close();
+});
+
+test('reverse phrase taps preserve punctuation, reject overlap, and Clear resets selection', async () => {
+  const state = { passages: [{ id: 'one', title: 'Tap ranges', text: 'casa, mi abuela.', highlights: [] }], active: 'one', settings: {} };
+  const session = await newPage({ viewport: { width: 820, height: 1180 }, hasTouch: true }, state);
+  const { page } = session;
+  await page.getByRole('button', { name: 'abuela', exact: true }).tap();
+  await page.getByRole('button', { name: 'casa', exact: true }).tap();
+  assert.equal(await page.locator('#selectionSummary').textContent(), '“casa, mi abuela”');
+  await page.locator('#clearSelectionBtn').tap();
+  assert.equal(await page.locator('.tap-selected').count(), 0);
+  await page.getByRole('button', { name: 'abuela', exact: true }).tap();
+  await page.locator('#selectionHint').tap();
+  await page.locator('#saveHighlight').tap();
+  await page.getByRole('button', { name: 'casa', exact: true }).tap();
+  await page.locator('#nativeSelectionMode').tap();
+  await selectText(page, 'casa, mi abuela');
+  await page.locator('#selectionHint').tap();
+  assert.equal(await page.locator('#highlightModal').isVisible(), false);
+  assert.match(await page.locator('#selectionSummary').textContent(), /overlaps/);
   await session.close();
 });
