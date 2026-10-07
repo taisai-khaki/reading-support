@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lumbre — Read, notice, remember</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="#"><span class="brand-mark">✦</span><span>Lumbre</span></a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-link active" data-view="reader">Reader</button>
+        <button class="nav-link" data-view="review">Flashcards <span class="nav-count" id="navCount">0</span></button>
+      </nav>
+      <div class="header-actions"><button class="icon-button" aria-label="Help">?</button><div class="avatar">AM</div></div>
+    </header>
+
+    <main>
+      <section class="view active" id="readerView">
+        <div class="page-heading">
+          <div><p class="eyebrow">READING STUDIO <span class="dot"></span> SPANISH</p><h1>Stay with the story.</h1><p class="intro">Read at your pace. Save the words that slow you down, and let them become familiar.</p></div>
+          <button class="ghost-button" id="newPassageBtn"><span>＋</span> New passage</button>
+        </div>
+        <div class="reader-layout">
+          <aside class="passage-sidebar">
+            <div class="side-label">YOUR PASSAGES <button class="plus-small" id="newPassageBtnSmall">＋</button></div>
+            <div id="passageList"></div>
+            <div class="sidebar-tip"><span>✧</span><div><strong>A small ritual</strong><p>Highlight only what you want to remember. A few words at a time is plenty.</p></div></div>
+          </aside>
+          <section class="reading-card">
+            <div class="reading-toolbar"><div class="passage-meta"><span class="language-pill">ES</span><span id="passageTitle">La casa de la abuela</span><span class="muted">·</span><span class="muted" id="wordCount">0 words</span></div><div class="toolbar-actions"><button class="text-button" id="clearHighlights">Clear highlights</button><button class="more-button">•••</button></div></div>
+            <div class="selection-hint" id="selectionHint"><span>↗</span> Select any word or expression to save it</div>
+            <article class="reading-text" id="readingText" tabindex="0"></article>
+            <div class="reader-footer"><span><span class="legend-mark"></span> Saved for review</span><span id="highlightCount">0 saved</span></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="reviewView">
+        <div class="page-heading review-heading"><div><p class="eyebrow">FLASHCARD REVIEW <span class="dot"></span> <span id="reviewEyebrow">LA CASA DE LA ABUELA</span></p><h1>Make it stick.</h1><p class="intro">One focused pass through your saved words. The hard ones will come around again.</p></div><button class="ghost-button" data-view="reader">← Back to reading</button></div>
+        <div class="review-layout">
+          <section class="flashcard-area">
+            <div class="round-label"><span id="roundLabel">ROUND 1</span><span class="round-line"><i id="roundProgress"></i></span><span id="queueLabel">0 remaining</span></div>
+            <div class="flashcard empty" id="flashcard"><div class="empty-state"><div class="empty-icon">✦</div><h2>Your review is clear.</h2><p>Highlight something in a passage and it will appear here.</p><button class="primary-button" data-view="reader">Go to reader</button></div></div>
+            <div class="answer-actions" id="answerActions"><button class="answer-button wrong" id="wrongBtn"><span>↗</span><strong>Not yet</strong><small>Show me again later</small></button><button class="answer-button right" id="rightBtn"><span>✓</span><strong>I knew it</strong><small>Count this one</small></button></div>
+            <p class="review-note">You’ll see every not-yet-learned word once before any repeats.</p>
+          </section>
+          <aside class="review-sidebar"><div class="progress-card"><div class="progress-top"><span>PASSAGE PROGRESS</span><strong id="learnedFraction">0 / 0 learned</strong></div><div class="big-progress"><i id="learnedProgress"></i></div><p><span class="green-dot"></span><span id="reviewStatus">Add highlights to start reviewing</span></p></div><div class="how-card"><p class="eyebrow">HOW IT WORKS</p><ol><li><span>1</span><div><strong>See the word</strong><p>Recall the meaning before revealing the answer.</p></div></li><li><span>2</span><div><strong>Mark your answer</strong><p>Correct answers build your streak.</p></div></li><li><span>3</span><div><strong>Learn it for good</strong><p>Five correct answers removes the highlight.</p></div></li></ol></div></aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="highlightModal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><button class="modal-close" id="closeModal">×</button><p class="eyebrow">ADD TO YOUR REVIEW</p><h2 id="modalTitle">Save this expression</h2><div class="selected-expression" id="selectedExpression"></div><label>English translation <span class="app-label">✦ suggested by Lumbre</span><div class="translation-suggestion" id="translationSuggestion">Translating…</div></label><label>Your notes <span class="optional">optional</span><textarea id="explanationInput" rows="3" placeholder="Add a memory, example, or explanation..." ></textarea></label><div class="modal-footer"><button class="text-button" id="cancelModal">Cancel</button><button class="primary-button" id="saveHighlight">Save expression <span>↗</span></button></div></div></div>
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
