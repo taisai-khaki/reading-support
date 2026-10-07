@@ -243,6 +243,8 @@ body:has(.selection-actions.is-active) .app-version { padding-bottom: 155px; }
 .selection-live-text { font:500 15px 'DM Sans',sans-serif; color:var(--deep); line-height:1.5; overflow-wrap:anywhere; min-height:20px; }
 .selection-live-text[lang=\"fa\"] { font-family:'Lumbre Persian',Tahoma,sans-serif; font-size:17px; direction:rtl; text-align:right; }
 .selection-live-status { margin-top:6px; font-size:11px; color:#8a9a94; line-height:1.4; }
+.word-breakdown { margin-top:10px; padding-top:8px; border-top:1px dashed #dfe8dd; display:flex; flex-wrap:wrap; gap:6px; }
+.breakdown-item { display:inline-block; padding:3px 8px; background:#f6f8f3; border:1px solid #e5ebe4; border-radius:12px; font:500 11px 'DM Mono',monospace; color:#5a6b65; letter-spacing:.2px; }
 
 .live-translation-panel { margin:0 45px 20px; background:#fcfdf8; border:1px solid #dbe6d8; border-radius:8px; overflow:hidden; box-shadow:0 6px 20px #193b3a0f; }
 .live-translation-panel[hidden] { display:none; }
