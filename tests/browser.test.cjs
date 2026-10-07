@@ -212,6 +212,90 @@ test('unknown phrases ask for a translation instead of inventing Farsi', async (
   await session.close();
 });
 
+test('an unknown word is translated online and filled into the save form automatically', async () => {
+  const state = {
+    passages: [{ id: 'p1', title: 'A new word', text: 'El farol brilla.', highlights: [] }],
+    active: 'p1', settings: { liveTranslationEnabled: true, liveTranslationOnline: true }
+  };
+  const session = await newPage({}, state);
+  const { page } = session;
+  const requestedWords = [];
+  await page.route('https://api.mymemory.translated.net/**', async route => {
+    const query = new URL(route.request().url()).searchParams.get('q');
+    requestedWords.push(query);
+    const translatedText = query === 'farol' ? 'streetlamp' : 'The streetlamp shines.';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ responseStatus: 200, responseData: { translatedText } })
+    });
+  });
+
+  await selectText(page, 'farol');
+  await page.locator('#selectionHint').click();
+  await page.waitForFunction(() => document.querySelector('#translationSuggestion').value === 'streetlamp');
+  assert.ok(requestedWords.includes('farol'), 'the selected word should be sent to the online translator');
+  assert.match(await page.locator('#englishTranslationStatus').textContent(), /online translation/i);
+  assert.equal(await page.locator('#saveHighlight').isEnabled(), true);
+  await page.locator('#saveHighlight').click();
+  assert.equal((await getState(page)).passages[0].highlights[0].translation, 'streetlamp');
+  await session.close();
+});
+
+test('offline mode is stated clearly when no built-in suggestion exists', async () => {
+  const state = {
+    passages: [{ id: 'p1', title: 'Offline passage', text: 'La luciérnaga brilla.', highlights: [] }],
+    active: 'p1', settings: { liveTranslationEnabled: true, liveTranslationOnline: true }
+  };
+  const session = await newPage({ viewport: { width: 320, height: 740 }, hasTouch: true, isMobile: true }, state);
+  const { page } = session;
+  await page.context().setOffline(true);
+  await selectText(page, 'luciérnaga');
+  await page.locator('#selectionHint').click();
+  assert.match(await page.locator('#englishTranslationStatus').textContent(), /Offline mode/i);
+  assert.equal(await page.locator('#retryEnglishTranslation').isVisible(), true);
+  await assertFits(page);
+  await page.locator('#translationSuggestion').fill('firefly');
+  await page.locator('#saveHighlight').click();
+  assert.equal((await getState(page)).passages[0].highlights[0].translation, 'firefly');
+  await session.close();
+});
+
+test('service failures are explained and do not replace a manual translation', async () => {
+  const state = {
+    passages: [{ id: 'p1', title: 'A service hiccup', text: 'El azogue brilla.', highlights: [] }],
+    active: 'p1', settings: { liveTranslationEnabled: true, liveTranslationOnline: true }
+  };
+  const session = await newPage({}, state);
+  const { page } = session;
+  let releaseFailedLookup;
+  const waitForFailure = new Promise(resolve => { releaseFailedLookup = resolve; });
+  await page.route('https://api.mymemory.translated.net/**', async route => {
+    const query = new URL(route.request().url()).searchParams.get('q');
+    if (query === 'azogue') {
+      await waitForFailure;
+      await route.abort();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ responseStatus: 200, responseData: { translatedText: 'The mercury shines.' } })
+    });
+  });
+
+  await selectText(page, 'azogue');
+  await page.locator('#selectionHint').click();
+  await page.waitForFunction(() => document.querySelector('#englishTranslationStatus').textContent.includes('Looking up'));
+  await page.locator('#translationSuggestion').fill('a manual meaning');
+  releaseFailedLookup();
+  await page.waitForFunction(() => document.querySelector('#englishTranslationStatus').textContent.includes('Could not reach'));
+  assert.equal(await page.locator('#translationSuggestion').inputValue(), 'a manual meaning');
+  await page.locator('#saveHighlight').click();
+  assert.equal((await getState(page)).passages[0].highlights[0].translation, 'a manual meaning');
+  await session.close();
+});
+
 test('actual touch taps save a word and a phrase without injecting a native selection', async () => {
   // This exercises DOM touch/pointer/click activation, not a programmatic Range.
   for (const [width, height, isMobile] of [[768, 1024, true], [1180, 820, false]]) {

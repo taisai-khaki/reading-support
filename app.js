@@ -526,9 +526,7 @@ function englishTranslationHelp(text) {
       ? 'Check the full-expression suggestion and edit it if needed.'
       : 'Review the word suggestion and edit it if needed.';
   }
-  return countWords(text) > 1
-    ? 'No reliable full-phrase suggestion is available. Add the meaning of the whole selection; word-by-word guesses are intentionally avoided.'
-    : 'No dictionary suggestion is available. Add the meaning in context.';
+  return 'Lumbre will look up an English translation automatically when online. If it cannot connect, you can retry or enter the meaning yourself.';
 }
 
 function syncFarsiControls() {
@@ -571,6 +569,7 @@ function saveLiveTranslationCache() {
   } catch {}
 }
 liveTranslationCache = loadLiveTranslationCache();
+const pendingOnlineTranslationRequests = new Map();
 
 function cacheKey(text, lang) {
   return `${lang}::${normalizeTranslationPhrase(text)}`;
@@ -622,23 +621,42 @@ async function fetchOnlineTranslation(text, targetLang) {
   if (!state.settings.liveTranslationOnline) throw new Error('online disabled');
   const trimmed = String(text || '').trim();
   if (!trimmed) return '';
-  // Use MyMemory free API (no key). If blocked, fallback will be used.
-  const langPair = `es|${targetLang === 'fa' ? 'fa' : 'en'}`;
-  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(trimmed)}&langpair=${langPair}&de=example@example.com`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 7000);
+  if (navigator.onLine === false) throw new Error('offline');
+
+  const lang = targetLang === 'fa' ? 'fa' : 'en';
+  const key = cacheKey(trimmed, lang);
+  if (pendingOnlineTranslationRequests.has(key)) return pendingOnlineTranslationRequests.get(key);
+
+  const request = (async () => {
+    // Use MyMemory free API (no key). If blocked, the caller can use its offline fallback.
+    const langPair = `es|${lang}`;
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(trimmed)}&langpair=${langPair}&de=example@example.com`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+    try {
+      const resp = await fetch(url, { signal: controller.signal });
+      if (!resp.ok) throw new Error(`http ${resp.status}`);
+      const data = await resp.json();
+      if (data?.responseStatus != null && Number(data.responseStatus) !== 200) {
+        throw new Error(data.responseDetails || 'translation service error');
+      }
+      const translated = String(data?.responseData?.translatedText || data?.matches?.[0]?.translation || '').trim();
+      if (!translated) throw new Error('empty translation');
+      // MyMemory can return the source unchanged when it has no useful match.
+      if (countWords(trimmed) > 1 && normalizeTranslationPhrase(translated) === normalizeTranslationPhrase(trimmed)) {
+        throw new Error('translation unchanged');
+      }
+      return translated;
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+
+  pendingOnlineTranslationRequests.set(key, request);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!resp.ok) throw new Error(`http ${resp.status}`);
-    const data = await resp.json();
-    const translated = data?.responseData?.translatedText || data?.matches?.[0]?.translation || '';
-    if (!translated) throw new Error('empty translation');
-    // MyMemory sometimes returns the same text when it fails; treat as failure if identical and long
-    return translated;
-  } catch (e) {
-    clearTimeout(timeout);
-    throw e;
+    return await request;
+  } finally {
+    if (pendingOnlineTranslationRequests.get(key) === request) pendingOnlineTranslationRequests.delete(key);
   }
 }
 
@@ -649,7 +667,7 @@ async function translateChunk(text, targetLang) {
   if (offline) {
     setCachedTranslation(text, targetLang, offline, 'offline');
     // Still try online in background if enabled and text is longer than single word
-    if (state.settings.liveTranslationOnline && countWords(text) > 1) {
+    if (state.settings.liveTranslationOnline && navigator.onLine !== false && countWords(text) > 1) {
       fetchOnlineTranslation(text, targetLang).then(online => {
         if (online && normalizeTranslationPhrase(online) !== normalizeTranslationPhrase(text)) {
           setCachedTranslation(text, targetLang, online, 'online');
@@ -658,7 +676,7 @@ async function translateChunk(text, targetLang) {
     }
     return { text: offline, source: 'offline' };
   }
-  if (!state.settings.liveTranslationOnline) {
+  if (!state.settings.liveTranslationOnline || navigator.onLine === false) {
     return { text: '', source: 'offline-missing' };
   }
   try {
@@ -667,8 +685,10 @@ async function translateChunk(text, targetLang) {
       setCachedTranslation(text, targetLang, online, 'online');
       return { text: online, source: 'online' };
     }
-  } catch {}
-  return { text: '', source: 'offline-missing' };
+  } catch (error) {
+    return { text: '', source: navigator.onLine === false ? 'offline-missing' : 'error' };
+  }
+  return { text: '', source: 'error' };
 }
 
 function splitIntoChunks(text, maxLen) {
@@ -700,13 +720,23 @@ function splitIntoChunks(text, maxLen) {
 async function translateTextFull(text, targetLang, onProgress) {
   const chunks = splitIntoChunks(text, LIVE_TRANSLATION_MAX_CHUNK);
   const results = [];
-  let source = 'offline';
+  const sources = { online: 0, offline: 0, missing: 0, error: 0 };
+  const currentSource = () => {
+    if (sources.error) return sources.online || sources.offline ? 'partial-error' : 'error';
+    if (sources.missing) return sources.online || sources.offline ? 'partial-offline' : 'offline-missing';
+    if (sources.online && sources.offline) return 'mixed';
+    if (sources.online) return 'online';
+    return sources.offline ? 'offline' : 'offline-missing';
+  };
+
   for (let i = 0; i < chunks.length; i++) {
     const res = await translateChunk(chunks[i], targetLang);
     results.push(res.text || chunks[i]);
-    if (res.source === 'online') source = 'online';
-    else if (res.source === 'offline' && source !== 'online') source = 'offline';
-    if (onProgress) onProgress(i + 1, chunks.length, source);
+    if (res.source === 'online') sources.online += 1;
+    else if (res.source === 'offline') sources.offline += 1;
+    else if (res.source === 'error') sources.error += 1;
+    else sources.missing += 1;
+    if (onProgress) onProgress(i + 1, chunks.length, currentSource());
   }
   // Reconstruct with paragraph breaks
   const paragraphs = String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
@@ -724,7 +754,7 @@ async function translateTextFull(text, targetLang, onProgress) {
       output = results.join('\n\n');
     }
   }
-  return { text: output, source, chunks: results.length };
+  return { text: output, source: currentSource(), chunks: results.length };
 }
 
 function syncLiveTranslationControls() {
@@ -810,18 +840,33 @@ async function renderLiveTranslation(force = false) {
   try {
     const result = await translateTextFull(passage.text, lang, (done, total, src) => {
       if (requestId !== liveTranslationRequestId) return;
-      status.textContent = `Translating ${done}/${total} • ${src === 'online' ? 'live online' : 'offline dictionary'}`;
+      const mode = src === 'online' || src === 'mixed'
+        ? 'live online'
+        : (src === 'error' || src === 'partial-error'
+          ? 'connection issue'
+          : (src === 'offline-missing' || src === 'partial-offline' ? 'offline mode' : 'offline dictionary'));
+      status.textContent = `Translating ${done}/${total} • ${mode}`;
     });
     if (requestId !== liveTranslationRequestId) return;
     const paragraphs = result.text.split(/\n{2,}/).map(p => `<div class="para">${escapeHtml(p)}</div>`).join('');
     content.innerHTML = paragraphs || escapeHtml(result.text);
     content.setAttribute('lang', lang);
-    const isOnline = result.source === 'online';
-    status.textContent = isOnline ? `Live online • ${result.chunks} segments • cached for offline` : `Offline dictionary • ${result.chunks} segments • add online for fuller sentences`;
-    status.className = isOnline ? 'live-translation-status online' : 'live-translation-status';
+    const isOnline = result.source === 'online' || result.source === 'mixed';
+    const hasError = result.source === 'error' || result.source === 'partial-error';
+    const statusMessages = {
+      online: `Live online • ${result.chunks} segments • cached for offline`,
+      mixed: `Online + offline dictionary • ${result.chunks} segments`,
+      offline: `Offline dictionary • ${result.chunks} segments • connect for fuller sentences`,
+      'offline-missing': 'Offline mode — no built-in translation is available for this passage.',
+      'partial-offline': 'Offline mode — some segments are still in Spanish. Connect and refresh for online translation.',
+      error: 'Could not reach the translation service. Check your connection and refresh.',
+      'partial-error': 'Some segments could not be translated online. Check your connection and refresh.'
+    };
+    status.textContent = statusMessages[result.source] || statusMessages.offline;
+    status.className = `live-translation-status${isOnline ? ' online' : (hasError ? ' error' : '')}`;
     if (badge) {
-      badge.textContent = isOnline ? 'live' : 'offline';
-      badge.className = isOnline ? 'live-badge online' : 'live-badge';
+      badge.textContent = isOnline ? (result.source === 'mixed' ? 'mixed' : 'live') : (hasError ? 'error' : 'offline');
+      badge.className = `live-badge${isOnline ? ' online' : (hasError ? ' error' : '')}`;
     }
   } catch (e) {
     if (requestId !== liveTranslationRequestId) return;
@@ -861,15 +906,19 @@ async function translateSelectionLive(text) {
     if (res.text) {
       textEl.textContent = res.text;
       textEl.setAttribute('lang', lang);
-      statusEl.textContent = res.source === 'online' ? 'Live online translation' : (res.source === 'offline' ? 'Offline dictionary match' : 'No offline match — try online');
+      statusEl.textContent = res.source === 'online' ? 'Live online translation' : 'Offline dictionary match';
       if (badgeEl) {
-        badgeEl.textContent = res.source === 'online' ? 'live' : (res.source === 'offline' ? 'offline' : 'no match');
-        badgeEl.className = res.source === 'online' ? 'live-badge online' : (res.source === 'error' ? 'live-badge error' : 'live-badge');
+        badgeEl.textContent = res.source === 'online' ? 'live' : 'offline';
+        badgeEl.className = res.source === 'online' ? 'live-badge online' : 'live-badge';
       }
-    } else {
-      textEl.textContent = lang === 'fa' ? 'ترجمهٔ آفلاین یافت نشد. آنلاین را امتحان کنید.' : 'No offline translation found. The full passage panel will try online.';
-      statusEl.textContent = 'Offline dictionary has limited phrases — online extends coverage.';
+    } else if (res.source === 'offline-missing') {
+      textEl.textContent = lang === 'fa' ? 'ترجمهٔ آفلاین یافت نشد. آنلاین را امتحان کنید.' : 'No built-in translation is available for this selection.';
+      statusEl.textContent = 'Offline mode — no built-in match. Reconnect to get an online translation.';
       if (badgeEl) { badgeEl.textContent = 'offline'; badgeEl.className = 'live-badge'; }
+    } else {
+      textEl.textContent = 'The translation service could not be reached.';
+      statusEl.textContent = 'Check your internet connection, then try again.';
+      if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.className = 'live-badge error'; }
     }
   } catch {
     if (requestId !== selectionLiveRequestId) return;
@@ -896,6 +945,100 @@ function migrateSavedTranslations() {
   }));
   if (changed) save();
   return phrasesNeedingReview;
+}
+
+let englishTranslationRequestId = 0;
+let englishTranslationLookupPending = false;
+let englishTranslationTouched = false;
+
+function setEnglishTranslationStatus(message, tone = '', showRetry = false) {
+  const status = $('englishTranslationStatus');
+  if (status) {
+    status.textContent = message;
+    status.className = `translation-helper translation-lookup-status${tone ? ` ${tone}` : ''}`;
+  }
+  const retry = $('retryEnglishTranslation');
+  if (retry) {
+    retry.hidden = !showRetry;
+    retry.disabled = englishTranslationLookupPending;
+  }
+}
+
+function syncEnglishTranslationSaveButton() {
+  const saveButton = $('saveHighlight');
+  const translation = $('translationSuggestion')?.value.trim();
+  if (saveButton) saveButton.disabled = englishTranslationLookupPending && !translation;
+  const retry = $('retryEnglishTranslation');
+  if (retry) retry.disabled = englishTranslationLookupPending;
+}
+
+function isCurrentEnglishTranslationLookup(requestId, phrase) {
+  return requestId === englishTranslationRequestId
+    && $('highlightModal').classList.contains('open')
+    && pendingText === phrase;
+}
+
+async function lookupEnglishTranslation(force = false) {
+  const requestId = ++englishTranslationRequestId;
+  const phrase = pendingText;
+  const field = $('translationSuggestion');
+  if (!phrase || !field) return;
+
+  const cached = getCachedTranslation(phrase, 'en');
+  if (!force && cached?.source === 'online' && cached.text) {
+    if (!englishTranslationTouched && !field.value.trim()) field.value = cached.text;
+    setEnglishTranslationStatus('A previously fetched online translation was filled from this device’s cache.', 'success');
+    syncEnglishTranslationSaveButton();
+    return;
+  }
+
+  if (!state.settings.liveTranslationEnabled) {
+    setEnglishTranslationStatus('Live translation is off. Turn it on to look this up, or enter the translation yourself.', 'offline');
+    englishTranslationLookupPending = false;
+    syncEnglishTranslationSaveButton();
+    return;
+  }
+  if (!state.settings.liveTranslationOnline) {
+    setEnglishTranslationStatus('Online translation is disabled. Enter the English meaning manually.', 'offline');
+    englishTranslationLookupPending = false;
+    syncEnglishTranslationSaveButton();
+    return;
+  }
+  if (navigator.onLine === false) {
+    setEnglishTranslationStatus('Offline mode — no built-in translation is available. Reconnect and tap “Try again,” or enter it manually.', 'offline', true);
+    englishTranslationLookupPending = false;
+    syncEnglishTranslationSaveButton();
+    return;
+  }
+
+  englishTranslationLookupPending = true;
+  setEnglishTranslationStatus('Looking up an English translation online…', 'loading');
+  syncEnglishTranslationSaveButton();
+  try {
+    const translation = await fetchOnlineTranslation(phrase, 'en');
+    if (!translation) throw new Error('empty translation');
+    setCachedTranslation(phrase, 'en', translation, 'online');
+    if (!isCurrentEnglishTranslationLookup(requestId, phrase)) return;
+
+    if (!englishTranslationTouched && !field.value.trim()) {
+      field.value = translation;
+      setEnglishTranslationStatus('Online translation added automatically. Review it before saving.', 'success');
+    } else {
+      setEnglishTranslationStatus('Your edit was kept; the online result did not replace it.', 'info', !field.value.trim());
+    }
+  } catch {
+    if (!isCurrentEnglishTranslationLookup(requestId, phrase)) return;
+    if (navigator.onLine === false) {
+      setEnglishTranslationStatus('Offline mode — no built-in translation is available. Reconnect and tap “Try again,” or enter it manually.', 'offline', !field.value.trim());
+    } else {
+      setEnglishTranslationStatus('Could not reach the translation service. Check your connection and try again, or enter it manually.', 'error', !field.value.trim());
+    }
+  } finally {
+    if (isCurrentEnglishTranslationLookup(requestId, phrase)) {
+      englishTranslationLookupPending = false;
+      syncEnglishTranslationSaveButton();
+    }
+  }
 }
 
 let dialogReturnFocus = null;
@@ -940,6 +1083,9 @@ document.addEventListener('keydown', event => {
 });
 
 function openHighlightModal(text, options = {}) {
+  englishTranslationRequestId += 1;
+  englishTranslationLookupPending = false;
+  englishTranslationTouched = false;
   pendingText = text.trim();
   pendingStart = Number.isInteger(options.start) ? options.start : null;
   pendingEnd = Number.isInteger(options.end) ? options.end : null;
@@ -947,9 +1093,15 @@ function openHighlightModal(text, options = {}) {
   $('modalTitle').textContent = options.editId ? 'Edit saved expression' : 'Save this expression';
   $('saveHighlight').textContent = options.editId ? 'Save changes' : 'Save expression ↗';
   $('selectedExpression').textContent = pendingText;
-  $('translationSuggestion').value = Object.prototype.hasOwnProperty.call(options, 'translation')
-    ? options.translation
-    : offerTranslation(pendingText);
+
+  const providedTranslation = Object.prototype.hasOwnProperty.call(options, 'translation')
+    ? String(options.translation || '').trim()
+    : '';
+  const cachedOnlineTranslation = getCachedTranslation(pendingText, 'en');
+  const cachedTranslation = cachedOnlineTranslation?.source === 'online' ? String(cachedOnlineTranslation.text || '').trim() : '';
+  const builtInTranslation = offerTranslation(pendingText);
+  const initialTranslation = providedTranslation || cachedTranslation || builtInTranslation;
+  $('translationSuggestion').value = initialTranslation;
   $('farsiTranslationInput').value = Object.prototype.hasOwnProperty.call(options, 'translationFa')
     ? options.translationFa
     : suggestFarsiTranslation(pendingText);
@@ -957,11 +1109,26 @@ function openHighlightModal(text, options = {}) {
   $('explanationInput').value = options.explanation || '';
   if (options.editId) $('saveHighlight').dataset.edit = options.editId;
   else delete $('saveHighlight').dataset.edit;
+
+  if (providedTranslation) {
+    setEnglishTranslationStatus('Saved English translation. Review or edit it here.');
+  } else if (cachedTranslation) {
+    setEnglishTranslationStatus('A previous online translation was filled from this device’s cache.', 'success');
+  } else if (builtInTranslation) {
+    setEnglishTranslationStatus('Built-in suggestion filled — available offline. Check it before saving.', 'success');
+  } else {
+    setEnglishTranslationStatus('');
+  }
+  syncEnglishTranslationSaveButton();
   syncFarsiControls();
   openDialog('highlightModal', 'modalTitle');
+  if (!initialTranslation) lookupEnglishTranslation();
 }
 
 function closeHighlightModal(reset = true) {
+  englishTranslationRequestId += 1;
+  englishTranslationLookupPending = false;
+  syncEnglishTranslationSaveButton();
   cancelSelectionCapture();
   window.getSelection()?.removeAllRanges();
   closeDialog('highlightModal');
@@ -1314,6 +1481,19 @@ $('readingText').addEventListener('keydown', event => {
     event.preventDefault();
     event.target.click();
   }
+});
+
+$('translationSuggestion').addEventListener('input', () => {
+  englishTranslationTouched = true;
+  const hasValue = Boolean($('translationSuggestion').value.trim());
+  if (englishTranslationLookupPending && hasValue) {
+    setEnglishTranslationStatus('Your entry will be kept; the online lookup will not replace it.', 'info');
+  }
+  syncEnglishTranslationSaveButton();
+});
+$('retryEnglishTranslation').addEventListener('click', () => {
+  if (!$('translationSuggestion').value.trim()) englishTranslationTouched = false;
+  lookupEnglishTranslation(true);
 });
 
 $('saveHighlight').addEventListener('click', () => {
