@@ -5,7 +5,7 @@ const initialState = {
   queue: [],
   repeatQueue: [],
   round: 1,
-  settings: { farsiEnabled: false, liveTranslationEnabled: false, liveTranslationLang: 'en', liveTranslationOnline: true }
+  settings: { farsiEnabled: false, liveTranslationEnabled: true, liveTranslationLang: 'en', liveTranslationOnline: true }
 };
 
 function loadState() {
@@ -22,7 +22,7 @@ function loadState() {
       stored.round = Number(stored.round) || 1;
       stored.settings = stored.settings && typeof stored.settings === 'object' ? stored.settings : {};
       stored.settings.farsiEnabled = stored.settings.farsiEnabled === true;
-      stored.settings.liveTranslationEnabled = stored.settings.liveTranslationEnabled === true;
+      stored.settings.liveTranslationEnabled = stored.settings.liveTranslationEnabled !== false;
       stored.settings.liveTranslationLang = stored.settings.liveTranslationLang === 'fa' ? 'fa' : 'en';
       stored.settings.liveTranslationOnline = stored.settings.liveTranslationOnline !== false;
       if (!stored.passages.some(passage => passage.id === stored.active)) {
