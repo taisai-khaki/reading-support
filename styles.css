@@ -81,6 +81,15 @@
 .language-toggle-copy strong{font-size:11px}
 .language-toggle-copy small{font:10px Tahoma,'Noto Naskh Arabic',sans-serif;color:#81908b}
 .translation-helper{display:block;margin-top:7px;color:#899991;font-size:11px;font-weight:400;line-height:1.5}
+.translation-lookup-row{display:flex;align-items:flex-start;gap:10px;margin-top:4px}
+.translation-lookup-status{flex:1;margin-top:0}
+.translation-lookup-status:empty{display:none}
+.translation-lookup-status.success{color:var(--green)}
+.translation-lookup-status.offline,.translation-lookup-status.error{color:#b65d41}
+.translation-lookup-status.loading{color:#71817d}
+.translation-retry{flex:none;margin:0;padding:0;color:var(--orange);font-weight:600;text-decoration:underline}
+.translation-retry[hidden]{display:none}
+#saveHighlight:disabled{opacity:.55;cursor:wait}
 .farsi-translation-field[hidden]{display:none}
 .farsi-translation-input{direction:rtl;text-align:right;font-family:Tahoma,'Noto Naskh Arabic',sans-serif!important}
 .translation-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;margin-top:12px}
