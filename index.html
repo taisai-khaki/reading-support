@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=1.4.0" />
+  <link rel="stylesheet" href="styles.css?v=1.5.0" />
 </head>
 <body>
   <div class="shell">
@@ -31,7 +31,7 @@
     <main>
       <section class="view active" id="readerView">
         <div class="page-heading">
-          <div><p class="eyebrow">READING STUDIO <span class="dot"></span> SPANISH <span class="app-release">v1.4.0</span></p><h1>Stay with the story.</h1><p class="intro">Read at your pace. Save the words that slow you down, and let them become familiar.</p></div>
+          <div><p class="eyebrow">READING STUDIO <span class="dot"></span> SPANISH <span class="app-release">v1.5.0</span></p><h1>Stay with the story.</h1><p class="intro">Read at your pace. Save the words that slow you down, and let them become familiar.</p></div>
           <button class="ghost-button" id="newPassageBtn"><span>＋</span> New passage</button>
         </div>
         <div class="passage-controls">
@@ -106,14 +106,14 @@
         </div>
       </section>
     </main>
-    <footer class="app-version">Lumbre · v1.4.0 · Edit name &amp; text · Farsi · Tap words · Live translation</footer>
+    <footer class="app-version">Lumbre · v1.5.0 · Edit name & text · Farsi · Tap words · Live translation · Contextual</footer>
   </div>
 
   <div class="modal-backdrop" id="highlightModal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><button class="modal-close" id="closeModal" type="button" aria-label="Close">×</button><p class="eyebrow">ADD TO YOUR REVIEW</p><h2 id="modalTitle" tabindex="-1">Save this expression</h2><div class="selected-expression" id="selectedExpression"></div><label class="farsi-modal-toggle"><input id="modalFarsiToggle" type="checkbox"> Show Farsi translations <span lang="fa" dir="rtl">فارسی</span></label><label for="translationSuggestion">English translation <span class="app-label">✦ automatic when online</span></label><textarea class="translation-input" id="translationSuggestion" rows="3" placeholder="An English translation will be filled in automatically when available." required></textarea><span class="translation-helper" id="englishTranslationHelp">Known words have built-in suggestions; other selections are translated online when connected.</span><div class="translation-lookup-row"><span class="translation-helper translation-lookup-status" id="englishTranslationStatus" role="status" aria-live="polite"></span><button class="text-button translation-retry" id="retryEnglishTranslation" type="button" hidden>Try again</button></div><div class="farsi-translation-field" id="farsiTranslationField" hidden><label for="farsiTranslationInput">Farsi translation <span class="app-label" lang="fa" dir="rtl">فارسی</span><textarea class="translation-input farsi-translation-input" id="farsiTranslationInput" rows="3" lang="fa" dir="rtl" placeholder="ترجمهٔ کامل عبارت یا جمله را وارد کنید..."></textarea><span class="translation-helper" id="farsiTranslationHelp">Add the complete Farsi translation. Built-in suggestions cover a limited set of words and phrases; other text needs your translation. It will appear beside English while Farsi is enabled.</span></label></div><label>Your notes <span class="optional">optional</span><textarea id="explanationInput" rows="3" placeholder="Add a memory, example, or explanation..." ></textarea></label><div class="modal-footer"><button class="text-button" id="cancelModal" type="button">Cancel</button><button class="primary-button" id="saveHighlight" type="button">Save expression <span>↗</span></button></div></div></div>
 
   <div class="modal-backdrop" id="passageModal"><div class="modal passage-modal" role="dialog" aria-modal="true" aria-labelledby="passageModalTitle"><button class="modal-close" id="closePassageModal" type="button" aria-label="Close">×</button><p class="eyebrow" id="passageModalEyebrow">BUILD YOUR READING STUDIO</p><h2 id="passageModalTitle" tabindex="-1">Add a passage.</h2><form id="passageForm"><label for="passageNameInput">Passage name<input id="passageNameInput" name="title" type="text" maxlength="100" placeholder="A short, helpful title" required></label><label for="passageTextInput">Spanish text<textarea id="passageTextInput" name="text" rows="9" placeholder="Paste or type the passage you want to read..." required></textarea></label><div class="modal-footer"><button class="text-button" id="cancelPassageModal" type="button">Cancel</button><button class="primary-button" id="savePassageButton" type="submit">Create passage</button></div></form></div></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="verb-analysis.js?v=1.4.0"></script>
-  <script src="app.js?v=1.4.0"></script>
+  <script src="verb-analysis.js?v=1.5.0"></script>
+  <script src="app.js?v=1.5.0"></script>
 </body>
 </html>
