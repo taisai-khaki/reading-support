@@ -5,7 +5,7 @@ const initialState = {
   queue: [],
   repeatQueue: [],
   round: 1,
-  settings: { farsiEnabled: false }
+  settings: { farsiEnabled: false, liveTranslationEnabled: true, liveTranslationLang: 'en', liveTranslationOnline: true }
 };
 
 function loadState() {
@@ -22,6 +22,9 @@ function loadState() {
       stored.round = Number(stored.round) || 1;
       stored.settings = stored.settings && typeof stored.settings === 'object' ? stored.settings : {};
       stored.settings.farsiEnabled = stored.settings.farsiEnabled === true;
+      stored.settings.liveTranslationEnabled = stored.settings.liveTranslationEnabled !== false;
+      stored.settings.liveTranslationLang = stored.settings.liveTranslationLang === 'fa' ? 'fa' : 'en';
+      stored.settings.liveTranslationOnline = stored.settings.liveTranslationOnline !== false;
       if (!stored.passages.some(passage => passage.id === stored.active)) {
         stored.active = stored.passages[0]?.id || '';
       }
@@ -94,6 +97,9 @@ function resetSelectionHint() {
   $('selectionActions').classList.remove('is-active');
   $('selectionSummary').textContent = 'No words selected';
   $('clearSelectionBtn').hidden = true;
+  const liveSel = $('selectionLiveTranslation');
+  if (liveSel) liveSel.hidden = true;
+  selectionLiveRequestId++;
   document.querySelectorAll('.tap-selected').forEach(word => {
     word.classList.remove('tap-selected');
     word.setAttribute('aria-pressed', 'false');
@@ -161,6 +167,7 @@ function renderPassageText(passage) {
 function render() {
   const passage = activePassage();
   syncFarsiControls();
+  syncLiveTranslationControls();
   syncSelectionMode();
   $('passageTotal').textContent = `(${state.passages.length})`;
   $('passageSelect').innerHTML = state.passages.length
@@ -204,6 +211,7 @@ function render() {
   $('highlightCount').textContent = `${activeHighlights.length} saved`;
   renderReview();
   save();
+  if (state.settings.liveTranslationEnabled) scheduleLiveTranslationRender();
 }
 
 const CARD_DIRECTIONS = ['es-en', 'en-es'];
@@ -537,6 +545,340 @@ function syncFarsiControls() {
   if (field) field.hidden = !enabled;
 }
 
+/* v1.3: live translation service */
+const LIVE_TRANSLATION_CACHE_KEY = 'lumbre-live-translation-cache-v1';
+const LIVE_TRANSLATION_MAX_CHUNK = 450;
+let liveTranslationCache = {};
+let liveTranslationRequestId = 0;
+let selectionLiveRequestId = 0;
+
+function loadLiveTranslationCache() {
+  try {
+    const raw = localStorage.getItem(LIVE_TRANSLATION_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+function saveLiveTranslationCache() {
+  try {
+    // Keep cache bounded
+    const keys = Object.keys(liveTranslationCache);
+    if (keys.length > 800) {
+      const toDelete = keys.slice(0, keys.length - 600);
+      toDelete.forEach(k => delete liveTranslationCache[k]);
+    }
+    localStorage.setItem(LIVE_TRANSLATION_CACHE_KEY, JSON.stringify(liveTranslationCache));
+  } catch {}
+}
+liveTranslationCache = loadLiveTranslationCache();
+
+function cacheKey(text, lang) {
+  return `${lang}::${normalizeTranslationPhrase(text)}`;
+}
+function getCachedTranslation(text, lang) {
+  const key = cacheKey(text, lang);
+  return liveTranslationCache[key] || '';
+}
+function setCachedTranslation(text, lang, translation, source) {
+  const key = cacheKey(text, lang);
+  liveTranslationCache[key] = { text: translation, source: source || 'offline', ts: Date.now() };
+  saveLiveTranslationCache();
+}
+
+function offlineTranslateWord(word, lang) {
+  const norm = normalizeTranslationPhrase(word);
+  if (!norm) return '';
+  if (lang === 'fa') return farsiDictionary[norm] || '';
+  return miniDictionary[norm] || '';
+}
+function offlineTranslateText(text, lang) {
+  const normalized = normalizeTranslationPhrase(text);
+  if (!normalized) return '';
+  const exact = exactPhraseTranslation(normalized, lang);
+  if (exact) return exact;
+  if (countWords(normalized) === 1) {
+    return offlineTranslateWord(normalized, lang) || '';
+  }
+  // Word-by-word fallback for longer phrases when online unavailable
+  const words = String(text || '').split(/(\s+|[.,;:\n\r]+)/);
+  let translated = 0;
+  let total = 0;
+  const out = words.map(part => {
+    if (/^\s+$/.test(part) || /^[.,;:\n\r]+$/.test(part)) return part;
+    const m = part.match(/[\p{L}\p{M}\p{N}]+(?:[’'-][\p{L}\p{M}\p{N}]+)*/gu);
+    if (!m) return part;
+    total += 1;
+    const lower = normalizeTranslationPhrase(part);
+    const dict = lang === 'fa' ? farsiDictionary[lower] : miniDictionary[lower];
+    if (dict) { translated += 1; return dict; }
+    return part;
+  }).join('');
+  // Only return word-by-word if we translated at least 40% or it's a short phrase
+  if (total > 0 && translated / total >= 0.4) return out;
+  return '';
+}
+
+async function fetchOnlineTranslation(text, targetLang) {
+  if (!state.settings.liveTranslationOnline) throw new Error('online disabled');
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
+  // Use MyMemory free API (no key). If blocked, fallback will be used.
+  const langPair = `es|${targetLang === 'fa' ? 'fa' : 'en'}`;
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(trimmed)}&langpair=${langPair}&de=example@example.com`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!resp.ok) throw new Error(`http ${resp.status}`);
+    const data = await resp.json();
+    const translated = data?.responseData?.translatedText || data?.matches?.[0]?.translation || '';
+    if (!translated) throw new Error('empty translation');
+    // MyMemory sometimes returns the same text when it fails; treat as failure if identical and long
+    return translated;
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
+  }
+}
+
+async function translateChunk(text, targetLang) {
+  const cached = getCachedTranslation(text, targetLang);
+  if (cached && cached.text) return { text: cached.text, source: cached.source || 'cache' };
+  const offline = offlineTranslateText(text, targetLang);
+  if (offline) {
+    setCachedTranslation(text, targetLang, offline, 'offline');
+    // Still try online in background if enabled and text is longer than single word
+    if (state.settings.liveTranslationOnline && countWords(text) > 1) {
+      fetchOnlineTranslation(text, targetLang).then(online => {
+        if (online && normalizeTranslationPhrase(online) !== normalizeTranslationPhrase(text)) {
+          setCachedTranslation(text, targetLang, online, 'online');
+        }
+      }).catch(() => {});
+    }
+    return { text: offline, source: 'offline' };
+  }
+  if (!state.settings.liveTranslationOnline) {
+    return { text: '', source: 'offline-missing' };
+  }
+  try {
+    const online = await fetchOnlineTranslation(text, targetLang);
+    if (online) {
+      setCachedTranslation(text, targetLang, online, 'online');
+      return { text: online, source: 'online' };
+    }
+  } catch {}
+  return { text: '', source: 'offline-missing' };
+}
+
+function splitIntoChunks(text, maxLen) {
+  const paragraphs = String(text || '').split(/\n{2,}/);
+  const chunks = [];
+  paragraphs.forEach(para => {
+    const trimmed = para.trim();
+    if (!trimmed) return;
+    if (trimmed.length <= maxLen) {
+      chunks.push(trimmed);
+      return;
+    }
+    // Split by sentences
+    const sentences = trimmed.match(/[^.!?¡¿]+[.!?¡¿]*\s*/g) || [trimmed];
+    let current = '';
+    sentences.forEach(sent => {
+      if ((current + sent).length > maxLen && current) {
+        chunks.push(current.trim());
+        current = sent;
+      } else {
+        current += sent;
+      }
+    });
+    if (current.trim()) chunks.push(current.trim());
+  });
+  return chunks;
+}
+
+async function translateTextFull(text, targetLang, onProgress) {
+  const chunks = splitIntoChunks(text, LIVE_TRANSLATION_MAX_CHUNK);
+  const results = [];
+  let source = 'offline';
+  for (let i = 0; i < chunks.length; i++) {
+    const res = await translateChunk(chunks[i], targetLang);
+    results.push(res.text || chunks[i]);
+    if (res.source === 'online') source = 'online';
+    else if (res.source === 'offline' && source !== 'online') source = 'offline';
+    if (onProgress) onProgress(i + 1, chunks.length, source);
+  }
+  // Reconstruct with paragraph breaks
+  const paragraphs = String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  // If chunk count equals paragraph count, map 1:1, else join with line breaks
+  let output = '';
+  if (results.length === paragraphs.length) {
+    output = results.join('\n\n');
+  } else {
+    // Try to preserve original paragraph structure by joining chunks that came from same para
+    output = results.join(' ');
+    // Re-insert double newlines where original had them by using original para count
+    // For simplicity, if original had double newlines, we approximate by double newline between translated paras when length similar
+    if (paragraphs.length > 1 && chunks.length > paragraphs.length) {
+      // Fallback: keep as spaced but preserve double newlines from original by replacing where we think
+      output = results.join('\n\n');
+    }
+  }
+  return { text: output, source, chunks: results.length };
+}
+
+function syncLiveTranslationControls() {
+  const enabled = Boolean(state.settings?.liveTranslationEnabled);
+  const lang = state.settings?.liveTranslationLang === 'fa' ? 'fa' : 'en';
+  const toggle = $('liveTranslationToggle');
+  const toolbarToggle = $('liveTranslationToolbarToggle');
+  const panel = $('liveTranslationPanel');
+  const langSelect = $('liveTranslationLang');
+  if (toggle) {
+    toggle.setAttribute('aria-checked', String(enabled));
+    toggle.classList.toggle('active', enabled);
+  }
+  if (toolbarToggle) {
+    toolbarToggle.classList.toggle('active', enabled);
+    toolbarToggle.textContent = enabled ? 'Live • on' : 'Live translate';
+    toolbarToggle.setAttribute('aria-pressed', String(enabled));
+  }
+  const statusEl = $('liveStatus');
+  if (statusEl) statusEl.textContent = enabled ? 'on' : 'off';
+  if (langSelect) langSelect.value = lang;
+  const contentEl = $('liveTranslationContent');
+  if (contentEl) contentEl.setAttribute('lang', lang);
+  if (panel) {
+    panel.hidden = !enabled;
+    if (!enabled) {
+      const selLive = $('selectionLiveTranslation');
+      if (selLive) selLive.hidden = true;
+    }
+  }
+}
+
+function setLiveTranslationEnabled(enabled) {
+  state.settings.liveTranslationEnabled = Boolean(enabled);
+  syncLiveTranslationControls();
+  save();
+  if (enabled) {
+    renderLiveTranslation();
+    if (pendingText) translateSelectionLive(pendingText);
+  }
+}
+
+function setLiveTranslationLang(lang) {
+  const normalized = lang === 'fa' ? 'fa' : 'en';
+  state.settings.liveTranslationLang = normalized;
+  syncLiveTranslationControls();
+  save();
+  if (state.settings.liveTranslationEnabled) {
+    renderLiveTranslation(true);
+    if (pendingText) translateSelectionLive(pendingText);
+  }
+}
+
+let liveTranslationDebounce = null;
+function scheduleLiveTranslationRender(force = false) {
+  if (!state.settings.liveTranslationEnabled) return;
+  if (liveTranslationDebounce) clearTimeout(liveTranslationDebounce);
+  liveTranslationDebounce = setTimeout(() => {
+    renderLiveTranslation(force);
+  }, force ? 10 : 350);
+}
+
+async function renderLiveTranslation(force = false) {
+  const panel = $('liveTranslationPanel');
+  const content = $('liveTranslationContent');
+  const status = $('liveTranslationStatus');
+  const badge = $('liveTranslationBadge');
+  const lang = state.settings.liveTranslationLang === 'fa' ? 'fa' : 'en';
+  if (!panel || !content || !status) return;
+  const passage = activePassage();
+  if (!passage) {
+    content.textContent = 'No passage selected.';
+    status.textContent = '';
+    if (badge) badge.textContent = 'offline';
+    return;
+  }
+  const requestId = ++liveTranslationRequestId;
+  content.innerHTML = `<span class="translating-placeholder">Translating…</span>`;
+  status.textContent = 'Translating…';
+  status.className = 'live-translation-status';
+  if (badge) { badge.textContent = 'translating'; badge.className = 'live-badge translating'; }
+
+  try {
+    const result = await translateTextFull(passage.text, lang, (done, total, src) => {
+      if (requestId !== liveTranslationRequestId) return;
+      status.textContent = `Translating ${done}/${total} • ${src === 'online' ? 'live online' : 'offline dictionary'}`;
+    });
+    if (requestId !== liveTranslationRequestId) return;
+    const paragraphs = result.text.split(/\n{2,}/).map(p => `<div class="para">${escapeHtml(p)}</div>`).join('');
+    content.innerHTML = paragraphs || escapeHtml(result.text);
+    content.setAttribute('lang', lang);
+    const isOnline = result.source === 'online';
+    status.textContent = isOnline ? `Live online • ${result.chunks} segments • cached for offline` : `Offline dictionary • ${result.chunks} segments • add online for fuller sentences`;
+    status.className = isOnline ? 'live-translation-status online' : 'live-translation-status';
+    if (badge) {
+      badge.textContent = isOnline ? 'live' : 'offline';
+      badge.className = isOnline ? 'live-badge online' : 'live-badge';
+    }
+  } catch (e) {
+    if (requestId !== liveTranslationRequestId) return;
+    content.textContent = 'Translation unavailable. Check connection or try again.';
+    status.textContent = 'Translation failed • offline fallback available';
+    status.className = 'live-translation-status error';
+    if (badge) { badge.textContent = 'error'; badge.className = 'live-badge error'; }
+  }
+}
+
+async function translateSelectionLive(text) {
+  const container = $('selectionLiveTranslation');
+  const textEl = $('selectionLiveTranslationText');
+  const statusEl = $('selectionLiveTranslationStatus');
+  const badgeEl = $('selectionLiveBadge');
+  const langEl = $('selectionLiveLang');
+  const titleEl = $('selectionLiveTitle');
+  if (!container || !textEl || !statusEl) return;
+  const lang = state.settings.liveTranslationLang === 'fa' ? 'fa' : 'en';
+  const trimmed = String(text || '').trim();
+  if (!trimmed || !state.settings.liveTranslationEnabled) {
+    container.hidden = true;
+    return;
+  }
+  const requestId = ++selectionLiveRequestId;
+  container.hidden = false;
+  textEl.textContent = 'Translating…';
+  textEl.setAttribute('lang', lang);
+  statusEl.textContent = '';
+  if (langEl) langEl.textContent = lang === 'fa' ? '→ فارسی' : '→ English';
+  if (titleEl) titleEl.textContent = 'Live translation';
+  if (badgeEl) { badgeEl.textContent = '…'; badgeEl.className = 'live-badge translating'; }
+
+  try {
+    const res = await translateChunk(trimmed, lang);
+    if (requestId !== selectionLiveRequestId) return;
+    if (res.text) {
+      textEl.textContent = res.text;
+      textEl.setAttribute('lang', lang);
+      statusEl.textContent = res.source === 'online' ? 'Live online translation' : (res.source === 'offline' ? 'Offline dictionary match' : 'No offline match — try online');
+      if (badgeEl) {
+        badgeEl.textContent = res.source === 'online' ? 'live' : (res.source === 'offline' ? 'offline' : 'no match');
+        badgeEl.className = res.source === 'online' ? 'live-badge online' : (res.source === 'error' ? 'live-badge error' : 'live-badge');
+      }
+    } else {
+      textEl.textContent = lang === 'fa' ? 'ترجمهٔ آفلاین یافت نشد. آنلاین را امتحان کنید.' : 'No offline translation found. The full passage panel will try online.';
+      statusEl.textContent = 'Offline dictionary has limited phrases — online extends coverage.';
+      if (badgeEl) { badgeEl.textContent = 'offline'; badgeEl.className = 'live-badge'; }
+    }
+  } catch {
+    if (requestId !== selectionLiveRequestId) return;
+    textEl.textContent = 'Translation unavailable.';
+    statusEl.textContent = 'Check connection.';
+    if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.className = 'live-badge error'; }
+  }
+}
+
 function migrateSavedTranslations() {
   let changed = false;
   let phrasesNeedingReview = 0;
@@ -668,6 +1010,9 @@ function setPendingSelection(start, end) {
   $('selectionHint').hidden = false;
   $('selectionActions').classList.add('is-active');
   $('clearSelectionBtn').hidden = false;
+  if (state.settings.liveTranslationEnabled) {
+    translateSelectionLive(phrase);
+  }
   // Do not replace article DOM here: doing so destroys native selection handles.
   $('readingText').querySelectorAll('.reading-word').forEach(word => {
     const selectedWord = Number(word.dataset.start) >= start && Number(word.dataset.end) <= end;
@@ -1065,6 +1410,28 @@ function setFarsiEnabled(enabled) {
 }
 $('farsiToggle').addEventListener('click', () => setFarsiEnabled(!state.settings.farsiEnabled));
 $('modalFarsiToggle').addEventListener('change', event => setFarsiEnabled(event.target.checked));
+$('liveTranslationToggle').addEventListener('click', () => setLiveTranslationEnabled(!state.settings.liveTranslationEnabled));
+$('liveTranslationToolbarToggle').addEventListener('click', () => setLiveTranslationEnabled(!state.settings.liveTranslationEnabled));
+$('liveTranslationLang').addEventListener('change', event => setLiveTranslationLang(event.target.value));
+$('liveTranslationClose').addEventListener('click', () => setLiveTranslationEnabled(false));
+$('liveTranslationRefresh').addEventListener('click', () => renderLiveTranslation(true));
+$('liveTranslationCopy').addEventListener('click', async () => {
+  const content = $('liveTranslationContent');
+  if (!content) return;
+  const text = content.innerText || content.textContent || '';
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Translation copied');
+  } catch {
+    // Fallback: select text
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    showToast('Translation selected — copy with Ctrl+C');
+  }
+});
 
 $('newPassageBtn').addEventListener('click', () => openPassageModal('new'));
 $('newPassageBtnSmall').addEventListener('click', () => openPassageModal('new'));
@@ -1174,6 +1541,7 @@ function answer(correct) {
 
 const phrasesNeedingTranslationReview = migrateSavedTranslations();
 syncFarsiControls();
+syncLiveTranslationControls();
 render();
 if (phrasesNeedingTranslationReview) {
   showToast(`${phrasesNeedingTranslationReview} old phrase translation${phrasesNeedingTranslationReview === 1 ? '' : 's'} need full-context review`);
