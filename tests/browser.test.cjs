@@ -429,3 +429,142 @@ test('reverse phrase taps preserve punctuation, reject overlap, and Clear resets
   assert.match(await page.locator('#selectionSummary').textContent(), /overlaps/);
   await session.close();
 });
+
+/* --- Verb flashcards --- */
+async function saveExpression(page, phrase, translation) {
+  await selectText(page, phrase);
+  await page.locator('#selectionHint').click();
+  await page.locator('#translationSuggestion').fill(translation);
+  await page.locator('#saveHighlight').click();
+  await page.locator('#highlightModal.open').waitFor({ state: 'detached' });
+}
+async function openVerbs(page) {
+  await page.getByRole('button', { name: /^Verbs/ }).click();
+  await page.locator('#verbsView.active').waitFor();
+}
+async function verbRows(page) {
+  return page.locator('#verbCard tbody tr').evaluateAll(rows => rows.map(row => [...row.children].map(cell => cell.textContent.trim())));
+}
+
+test('saving a regular verb adds a first-person verb card', async () => {
+  const session = await newPage();
+  const { page } = session;
+  await saveExpression(page, 'llegué', 'I arrived');
+  assert.match(await page.locator('#toast').textContent(), /1 verb card added \(llegar\)/);
+  assert.equal(await page.locator('#verbNavCount').textContent(), '1');
+  await openVerbs(page);
+  assert.equal(await page.locator('#verbCard .card-word').textContent(), 'llegar');
+  assert.match(await page.locator('#verbCard .card-label').first().textContent(), /CONJUGATE · REGULAR VERB/);
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.match(await page.locator('#verbCard .verb-table caption').textContent(), /Regular verb/);
+  const rows = await verbRows(page);
+  assert.deepEqual(rows, [
+    ['To-be form', 'llegar'],
+    ['yo', 'llego', 'llegué']
+  ], 'a regular verb card shows only the infinitive and the first person');
+  await page.screenshot({ path: '.artifacts/verb-card-regular.png', fullPage: true });
+  await session.close();
+});
+
+test('saving an irregular verb adds every person for present and past', async () => {
+  const session = await newPage();
+  const { page } = session;
+  await saveExpression(page, 'le conté', 'I told him');
+  assert.match(await page.locator('#toast').textContent(), /1 verb card added \(contar\)/);
+  await openVerbs(page);
+  await page.locator('.verb-memory-button', { hasText: 'contar' }).click();
+  assert.match(await page.locator('#verbCard .card-label').first().textContent(), /CONJUGATE · IRREGULAR VERB/);
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.match(await page.locator('#verbCard .verb-table caption').textContent(), /Irregular verb/);
+  const rows = await verbRows(page);
+  assert.deepEqual(rows, [
+    ['To-be form', 'contar'],
+    ['yo', 'cuento', 'conté'],
+    ['tú', 'cuentas', 'contaste'],
+    ['él / ella / usted', 'cuenta', 'contó'],
+    ['nosotros/as', 'contamos', 'contamos'],
+    ['vosotros/as', 'contáis', 'contasteis'],
+    ['ellos / ellas / ustedes', 'cuentan', 'contaron']
+  ]);
+  await page.screenshot({ path: '.artifacts/verb-card-irregular.png', fullPage: true });
+  await session.close();
+});
+
+test('a saved expression without a known verb creates no verb card', async () => {
+  const session = await newPage();
+  const { page } = session;
+  await saveExpression(page, 'la casa de mi abuela', 'my grandmother’s house');
+  assert.equal(await page.locator('#toast').textContent(), 'Translation added to your flashcards');
+  assert.equal(await page.locator('#verbNavCount').textContent(), '0');
+  await openVerbs(page);
+  assert.match(await page.locator('#verbCard .empty-state h2').textContent(), /No verbs here yet/);
+  await session.close();
+});
+
+test('a verb is learned after five correct answers in each direction', async () => {
+  const session = await newPage({}, {
+    passages: [{ id: 'p1', title: 'Hablar', text: 'Hablo español.', highlights: [] }],
+    active: 'p1', queue: [], repeatQueue: [], round: 1,
+    settings: { farsiEnabled: false, liveTranslationEnabled: false },
+    verbs: [{ id: 'v1', lemma: 'hablar', regular: true, sources: [], manual: true, cards: { conjugate: 4, identify: 4 }, learned: false }],
+    verbQueue: [], verbRepeatQueue: [], verbRound: 1, customVerbs: []
+  });
+  const { page } = session;
+  await openVerbs(page);
+  assert.equal(await page.locator('#verbCard .card-word').textContent(), 'hablar');
+  assert.match(await page.locator('#verbCard .card-label').last().textContent(), /Card 1 of 2/);
+  await page.locator('#verbRightBtn').click();
+  assert.match(await page.locator('#toast').textContent(), /this direction is set/);
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.match(await page.locator('#verbCard .card-label').first().textContent(), /WHICH VERB IS THIS\?/);
+  assert.match(await page.locator('#verbCard .card-label').last().textContent(), /Card 2 of 2/);
+  await page.locator('#verbRightBtn').click();
+  assert.match(await page.locator('#toast').textContent(), /hablar is learned in both directions/);
+  assert.match(await page.locator('#verbCard .empty-state h2').textContent(), /Your verb practice is clear/);
+  assert.match(await page.locator('#verbMemoryList').textContent(), /learned|hablar/);
+  assert.equal((await getState(page)).verbs[0].learned, true);
+  await session.close();
+});
+
+test('readers can add their own verbs and they survive a reload', async () => {
+  const session = await newPage();
+  const { page } = session;
+  await openVerbs(page);
+  await page.locator('#addVerbInput').fill('teletrabajar, volver');
+  await page.locator('#addVerbForm button[type="submit"]').click();
+  assert.match(await page.locator('#toast').textContent(), /2 verbs in your practice: teletrabajar, volver/);
+  assert.equal(await page.locator('#verbNavCount').textContent(), '2');
+  await page.locator('.verb-memory-button', { hasText: 'teletrabajar' }).click();
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.deepEqual(await verbRows(page), [
+    ['To-be form', 'teletrabajar'],
+    ['yo', 'teletrabajo', 'teletrabajé']
+  ]);
+  await page.locator('.verb-memory-button', { hasText: 'volver' }).click();
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.match(await page.locator('#verbCard .card-label').first().textContent(), /IRREGULAR VERB/);
+  assert.deepEqual((await verbRows(page))[1], ['yo', 'vuelvo', 'volví']);
+  await page.reload();
+  await openVerbs(page);
+  assert.equal(await page.locator('.verb-memory-item').count(), 2);
+  assert.deepEqual((await getState(page)).customVerbs.sort(), ['teletrabajar', 'volver']);
+  await session.close();
+});
+
+test('verb cards are removed from practice and persist with the passage', async () => {
+  const session = await newPage();
+  const { page } = session;
+  await saveExpression(page, 'Me senté', 'I sat down');
+  await openVerbs(page);
+  assert.equal(await page.locator('#verbCard .card-word').textContent(), 'sentarse');
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.deepEqual((await verbRows(page))[1], ['yo', 'siento', 'senté']);
+  await page.locator('[data-verb-remove]').click();
+  assert.equal(await page.locator('.verb-memory-item').count(), 0);
+  assert.equal(await page.locator('#verbNavCount').textContent(), '0');
+  await page.reload();
+  await openVerbs(page);
+  // The expression is still saved, so the backfill brings the verb card back.
+  assert.equal(await page.locator('#verbCard .card-word').textContent(), 'sentarse');
+  await session.close();
+});

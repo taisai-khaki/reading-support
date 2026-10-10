@@ -9,6 +9,9 @@
     '3rd person plural · ellos / ellas / ustedes'
   ];
   const formIndex = new Map();
+  // Every registered infinitive, keyed by normalized lemma. This is the app's
+  // verb memory: the flashcard verb section reads it to build practice cards.
+  const verbCatalog = new Map();
   const agreeingIrregularParticiples = new Set(['abierto', 'caído', 'creído', 'cubierto', 'dicho', 'escrito', 'frito', 'hecho', 'muerto', 'oído', 'puesto', 'reído', 'roto', 'satisfecho', 'sonreído', 'traído', 'visto', 'vuelto']);
 
   const normalize = value => String(value || '').normalize('NFC').toLocaleLowerCase('es');
@@ -73,6 +76,12 @@
     return forms;
   }
 
+  function sameForms(actual, expected) {
+    return Array.isArray(actual) && Array.isArray(expected)
+      && actual.length === expected.length
+      && actual.every((form, index) => normalize(form) === normalize(expected[index]));
+  }
+
   function registerVerb(lemma, overrides = {}) {
     const ending = normalize(lemma).slice(-2).replace('í', 'i');
     if (!['ar', 'er', 'ir'].includes(ending)) return;
@@ -81,6 +90,41 @@
     const forms = { ...regular, ...overrides };
     const presentYo = overrides.presentYo || forms.present[0];
     const metadata = { infinitive: lemma, stem: stem ? `${stem}-` : 'irregular', presentYo };
+
+    // “Regular” means the present and the past (preterite) follow the pattern.
+    // Spelling-only changes (buscar → busqué) are applied by regularForms, so
+    // those verbs still count as regular. Everything else is flagged.
+    const irregularIn = [
+      ['Present', forms.present, regular.present],
+      ['Past · preterite', forms.preterite, regular.preterite]
+    ].filter(([, actual, expected]) => !sameForms(actual, expected)).map(([label]) => label);
+    const otherIrregular = [
+      ['Imperfect', forms.imperfect, regular.imperfect],
+      ['Present subjunctive', forms.presentSubjunctive, regular.presentSubjunctive],
+      ['Future', forms.future, regular.future],
+      ['Conditional', forms.conditional, regular.conditional]
+    ].filter(([, actual, expected]) => !sameForms(actual, expected)).map(([label]) => label);
+    if (normalize(forms.participle) !== normalize(regular.participle)) otherIrregular.push('Past participle');
+    if (normalize(forms.gerund) !== normalize(regular.gerund)) otherIrregular.push('Gerund');
+
+    verbCatalog.set(normalize(lemma), {
+      infinitive: lemma,
+      ending,
+      stem,
+      regular: irregularIn.length === 0,
+      irregularIn,
+      otherIrregular,
+      presentYo,
+      present: forms.present.slice(),
+      preterite: forms.preterite.slice(),
+      imperfect: forms.imperfect.slice(),
+      presentSubjunctive: forms.presentSubjunctive.slice(),
+      future: forms.future.slice(),
+      conditional: forms.conditional.slice(),
+      participle: forms.participle,
+      gerund: forms.gerund,
+      reflexive: false
+    });
 
     const finiteTenses = [
       ['Present indicative', forms.present],
@@ -565,10 +609,517 @@
     }
   };
 
-  const overridesByLemma = { ...extraOverrides, ...irregular };
-  commonVerbs.forEach(lemma => registerVerb(lemma, overridesByLemma[lemma] || {}));
+  /* Verbs that were in the memory without their real forms. Each of these was
+   * silently conjugated with the regular pattern before, which produced forms
+   * that do not exist (manteno, creco, volo, envio…). They are corrected here. */
+  const correctedOverrides = {
+    atravesar: {
+      present: ['atravieso', 'atraviesas', 'atraviesa', 'atravesamos', 'atravesáis', 'atraviesan'],
+      presentSubjunctive: ['atraviese', 'atravieses', 'atraviese', 'atravesemos', 'atraveséis', 'atraviesen'],
+      presentYo: 'atravieso'
+    },
+    calentar: {
+      present: ['caliento', 'calientas', 'calienta', 'calentamos', 'calentáis', 'calientan'],
+      presentSubjunctive: ['caliente', 'calientes', 'caliente', 'calentemos', 'calentéis', 'calienten'],
+      presentYo: 'caliento'
+    },
+    coger: {
+      present: ['cojo', 'coges', 'coge', 'cogemos', 'cogéis', 'cogen'],
+      presentSubjunctive: ['coja', 'cojas', 'coja', 'cojamos', 'cojáis', 'cojan'],
+      presentYo: 'cojo'
+    },
+    conseguir: {
+      present: ['consigo', 'consigues', 'consigue', 'conseguimos', 'conseguís', 'consiguen'],
+      preterite: ['conseguí', 'conseguiste', 'consiguió', 'conseguimos', 'conseguisteis', 'consiguieron'],
+      presentSubjunctive: ['consiga', 'consigas', 'consiga', 'consigamos', 'consigáis', 'consigan'],
+      presentYo: 'consigo'
+    },
+    descubrir: { participle: 'descubierto' },
+    devolver: {
+      present: ['devuelvo', 'devuelves', 'devuelve', 'devolvemos', 'devolvéis', 'devuelven'],
+      presentSubjunctive: ['devuelva', 'devuelvas', 'devuelva', 'devolvamos', 'devolváis', 'devuelvan'],
+      presentYo: 'devuelvo', participle: 'devuelto'
+    },
+    divertir: {
+      present: ['divierto', 'diviertes', 'divierte', 'divertimos', 'divertís', 'divierten'],
+      preterite: ['divertí', 'divertiste', 'divirtió', 'divertimos', 'divertisteis', 'divirtieron'],
+      presentSubjunctive: ['divierta', 'diviertas', 'divierta', 'divirtamos', 'divirtáis', 'diviertan'],
+      presentYo: 'divierto'
+    },
+    crecer: {
+      present: ['crezco', 'creces', 'crece', 'crecemos', 'crecéis', 'crecen'],
+      presentSubjunctive: ['crezca', 'crezcas', 'crezca', 'crezcamos', 'crezcáis', 'crezcan'],
+      presentYo: 'crezco'
+    },
+    dirigir: {
+      present: ['dirijo', 'diriges', 'dirige', 'dirigimos', 'dirigís', 'dirigen'],
+      presentSubjunctive: ['dirija', 'dirijas', 'dirija', 'dirijamos', 'dirijáis', 'dirijan'],
+      presentYo: 'dirijo'
+    },
+    enviar: {
+      present: ['envío', 'envías', 'envía', 'enviamos', 'enviáis', 'envían'],
+      presentSubjunctive: ['envíe', 'envíes', 'envíe', 'enviemos', 'enviéis', 'envíen'],
+      presentYo: 'envío'
+    },
+    mantener: {
+      present: ['mantengo', 'mantienes', 'mantiene', 'mantenemos', 'mantenéis', 'mantienen'],
+      preterite: ['mantuve', 'mantuviste', 'mantuvo', 'mantuvimos', 'mantuvisteis', 'mantuvieron'],
+      presentSubjunctive: ['mantenga', 'mantengas', 'mantenga', 'mantengamos', 'mantengáis', 'mantengan'],
+      future: ['mantendré', 'mantendrás', 'mantendrá', 'mantendremos', 'mantendréis', 'mantendrán'],
+      conditional: ['mantendría', 'mantendrías', 'mantendría', 'mantendríamos', 'mantendríais', 'mantendrían'],
+      presentYo: 'mantengo', gerund: 'manteniendo'
+    },
+    merecer: {
+      present: ['merezco', 'mereces', 'merece', 'merecemos', 'merecéis', 'merecen'],
+      presentSubjunctive: ['merezca', 'merezcas', 'merezca', 'merezcamos', 'merezcáis', 'merezcan'],
+      presentYo: 'merezco'
+    },
+    nacer: {
+      present: ['nazco', 'naces', 'nace', 'nacemos', 'nacéis', 'nacen'],
+      presentSubjunctive: ['nazca', 'nazcas', 'nazca', 'nazcamos', 'nazcáis', 'nazcan'],
+      presentYo: 'nazco'
+    },
+    ofrecer: {
+      present: ['ofrezco', 'ofreces', 'ofrece', 'ofrecemos', 'ofrecéis', 'ofrecen'],
+      presentSubjunctive: ['ofrezca', 'ofrezcas', 'ofrezca', 'ofrezcamos', 'ofrezcáis', 'ofrezcan'],
+      presentYo: 'ofrezco'
+    },
+    permanecer: {
+      present: ['permanezco', 'permaneces', 'permanece', 'permanecemos', 'permanecéis', 'permanecen'],
+      presentSubjunctive: ['permanezca', 'permanezcas', 'permanezca', 'permanezcamos', 'permanezcáis', 'permanezcan'],
+      presentYo: 'permanezco'
+    },
+    proteger: {
+      present: ['protejo', 'proteges', 'protege', 'protegemos', 'protegéis', 'protegen'],
+      presentSubjunctive: ['proteja', 'protejas', 'proteja', 'protejamos', 'protejáis', 'protejan'],
+      presentYo: 'protejo'
+    },
+    reunir: {
+      present: ['reúno', 'reúnes', 'reúne', 'reunimos', 'reunís', 'reúnen'],
+      presentSubjunctive: ['reúna', 'reúnas', 'reúna', 'reunamos', 'reunáis', 'reúnan'],
+      presentYo: 'reúno'
+    },
+    resolver: {
+      present: ['resuelvo', 'resuelves', 'resuelve', 'resolvemos', 'resolvéis', 'resuelven'],
+      presentSubjunctive: ['resuelva', 'resuelvas', 'resuelva', 'resolvamos', 'resolváis', 'resuelvan'],
+      presentYo: 'resuelvo', participle: 'resuelto'
+    },
+    satisfacer: {
+      present: ['satisfago', 'satisfaces', 'satisface', 'satisfacemos', 'satisfacéis', 'satisfacen'],
+      preterite: ['satisfice', 'satisficiste', 'satisfizo', 'satisficimos', 'satisficisteis', 'satisficieron'],
+      presentSubjunctive: ['satisfaga', 'satisfagas', 'satisfaga', 'satisfagamos', 'satisfagáis', 'satisfagan'],
+      future: ['satisfaré', 'satisfarás', 'satisfará', 'satisfaremos', 'satisfaréis', 'satisfarán'],
+      conditional: ['satisfaría', 'satisfarías', 'satisfaría', 'satisfaríamos', 'satisfaríais', 'satisfarían'],
+      presentYo: 'satisfago', participle: 'satisfecho'
+    },
+    soñar: {
+      present: ['sueño', 'sueñas', 'sueña', 'soñamos', 'soñáis', 'sueñan'],
+      presentSubjunctive: ['sueñe', 'sueñes', 'sueñe', 'soñemos', 'soñéis', 'sueñen'],
+      presentYo: 'sueño'
+    },
+    vencer: {
+      present: ['venzo', 'vences', 'vence', 'vencemos', 'vencéis', 'vencen'],
+      presentSubjunctive: ['venza', 'venzas', 'venza', 'venzamos', 'venzáis', 'venzan'],
+      presentYo: 'venzo'
+    },
+    volar: {
+      present: ['vuelo', 'vuelas', 'vuela', 'volamos', 'voláis', 'vuelan'],
+      presentSubjunctive: ['vuele', 'vueles', 'vuele', 'volemos', 'voléis', 'vuelen'],
+      presentYo: 'vuelo'
+    },
+    vestir: {
+      present: ['visto', 'vistes', 'viste', 'vestimos', 'vestís', 'visten'],
+      preterite: ['vestí', 'vestiste', 'vistió', 'vestimos', 'vestisteis', 'vistieron'],
+      presentSubjunctive: ['vista', 'vistas', 'vista', 'vistamos', 'vistáis', 'vistan'],
+      presentYo: 'visto', participle: 'vestido', gerund: 'vistiendo'
+    }
+  };
+
+  /* Extra verbs added to the memory so more saved expressions match a verb. */
+  const moreVerbs = `
+    abrazar alcanzar alquilar animar anunciar apagar apoyar arrastrar asustar atacar avisar besar brillar bromear
+    cargar cenar charlar chocar citar colocar comentar congelar conversar copiar crear cruzar dañar dedicar decorar
+    desarrollar desordenar dudar echar educar empujar encantar enfermar enfriar enojar ensayar entrenar escapar evitar
+    examinar extrañar fabricar fallar felicitar funcionar garantizar girar gritar heredar hospedar humillar hundir
+    identificar ignorar importar impresionar inscribir insistir inspirar instalar insultar interpretar interrumpir
+    investigar juzgar lastimar lanzar latir liberar limitar molestar montar negociar nombrar observar ocupar odiar optar
+    organizar pasear pegar peinar pelear percibir pescar picar pintar planear plantar platicar preparar prestar
+    pronunciar provocar quemar quejar quitar rascar rayar realizar regalar registrar relajar rellenar remar rentar
+    respirar resultar rescatar retirar retratar revisar rezar rodear roncar ruborizar sacudir saludar sanar sangrar
+    separar sobrar solicitar soplar soportar subrayar sumar suspirar susurrar tachar tapar tardar telefonear tragar
+    traicionar tranquilizar transportar tratar trepar triunfar ubicar untar velar vendar vengar ventilar verificar
+    vigilar vomitar zarpar
+    barrer coser esconder poseer tejer toser
+    admitir confundir contribuir destruir distribuir existir huir imprimir influir omitir perseguir prohibir resistir
+    sustituir transmitir unir
+    acordar adquirir advertir almorzar apostar aprobar atender componer consentir contener convertir corregir costar
+    defender demostrar despedir descender disponer entretener exponer extender fingir forzar hervir impedir
+    intervenir invertir mentir morder obedecer oscurecer obtener oler padecer posponer prevenir proponer proveer
+    reconocer reducir rendir regar negar reunir rodar soler soltar sugerir sostener suponer tender
+    variar vaciar verter
+  `.trim().split(/\s+/);
+
+  const moreOverrides = {
+    oler: {
+      present: ['huelo', 'hueles', 'huele', 'olemos', 'oléis', 'huelen'],
+      presentSubjunctive: ['huela', 'huelas', 'huela', 'olamos', 'oláis', 'huelan'],
+      presentYo: 'huelo'
+    },
+    soler: {
+      present: ['suelo', 'sueles', 'suele', 'solemos', 'soléis', 'suelen'],
+      presentSubjunctive: ['suela', 'suelas', 'suela', 'solamos', 'soláis', 'suelan'],
+      presentYo: 'suelo'
+    },
+    costar: {
+      present: ['cuesto', 'cuestas', 'cuesta', 'costamos', 'costáis', 'cuestan'],
+      presentSubjunctive: ['cueste', 'cuestes', 'cueste', 'costemos', 'costéis', 'cuesten'],
+      presentYo: 'cuesto'
+    },
+    aprobar: {
+      present: ['apruebo', 'apruebas', 'aprueba', 'aprobamos', 'aprobáis', 'aprueban'],
+      presentSubjunctive: ['apruebe', 'apruebes', 'apruebe', 'aprobemos', 'aprobéis', 'aprueben'],
+      presentYo: 'apruebo'
+    },
+    demostrar: {
+      present: ['demuestro', 'demuestras', 'demuestra', 'demostramos', 'demostráis', 'demuestran'],
+      presentSubjunctive: ['demuestre', 'demuestres', 'demuestre', 'demostramos', 'demostréis', 'demuestren'],
+      presentYo: 'demuestro'
+    },
+    acordar: {
+      present: ['acuerdo', 'acuerdas', 'acuerda', 'acordamos', 'acordáis', 'acuerdan'],
+      presentSubjunctive: ['acuerde', 'acuerdes', 'acuerde', 'acordemos', 'acordéis', 'acuerden'],
+      presentYo: 'acuerdo'
+    },
+    almorzar: {
+      present: ['almuerzo', 'almuerzas', 'almuerza', 'almorzamos', 'almorzáis', 'almuerzan'],
+      presentSubjunctive: ['almuerce', 'almuerces', 'almuerce', 'almorcemos', 'almorcéis', 'almuercen'],
+      presentYo: 'almuerzo'
+    },
+    apostar: {
+      present: ['apuesto', 'apuestas', 'apuesta', 'apostamos', 'apostáis', 'apuestan'],
+      presentSubjunctive: ['apueste', 'apuestes', 'apueste', 'apostemos', 'apostéis', 'apuesten'],
+      presentYo: 'apuesto'
+    },
+    forzar: {
+      present: ['fuerzo', 'fuerzas', 'fuerza', 'forzamos', 'forzáis', 'fuerzan'],
+      presentSubjunctive: ['fuerce', 'fuerces', 'fuerce', 'forcemos', 'forcéis', 'fuerce'],
+      presentYo: 'fuerzo'
+    },
+    rodar: {
+      present: ['ruedo', 'ruedas', 'rueda', 'rodamos', 'rodáis', 'ruedan'],
+      presentSubjunctive: ['ruede', 'ruedes', 'ruede', 'rodemos', 'rodéis', 'rueden'],
+      presentYo: 'ruedo'
+    },
+    soltar: {
+      present: ['suelto', 'sueltas', 'suelta', 'soltamos', 'soltáis', 'sueltan'],
+      presentSubjunctive: ['suelte', 'sueltes', 'suelte', 'soltemos', 'soltéis', 'suelten'],
+      presentYo: 'suelto'
+    },
+    morder: {
+      present: ['muerdo', 'muerdes', 'muerde', 'mordemos', 'mordéis', 'muerden'],
+      presentSubjunctive: ['muerda', 'muerdas', 'muerda', 'mordamos', 'mordáis', 'muerdan'],
+      presentYo: 'muerdo'
+    },
+    atender: {
+      present: ['atiendo', 'atiendes', 'atiende', 'atendemos', 'atendéis', 'atienden'],
+      presentSubjunctive: ['atienda', 'atiendas', 'atienda', 'atendamos', 'atendáis', 'atiendan'],
+      presentYo: 'atiendo'
+    },
+    defender: {
+      present: ['defiendo', 'defiendes', 'defiende', 'defendemos', 'defendéis', 'defienden'],
+      presentSubjunctive: ['defienda', 'defiendas', 'defienda', 'defendamos', 'defendáis', 'defiendan'],
+      presentYo: 'defiendo'
+    },
+    encender: {
+      present: ['enciendo', 'enciendes', 'enciende', 'encendemos', 'encendéis', 'encienden'],
+      presentSubjunctive: ['encienda', 'enciendas', 'encienda', 'encendamos', 'encendáis', 'enciendan'],
+      presentYo: 'enciendo'
+    },
+    descender: {
+      present: ['desciendo', 'desciendes', 'desciende', 'descendemos', 'descendéis', 'descienden'],
+      presentSubjunctive: ['descienda', 'desciendas', 'descienda', 'descendamos', 'descendáis', 'desciendan'],
+      presentYo: 'desciendo'
+    },
+    extender: {
+      present: ['extiendo', 'extiendes', 'extiende', 'extendemos', 'extendéis', 'extienden'],
+      presentSubjunctive: ['extienda', 'extiendas', 'extienda', 'extendamos', 'extendáis', 'extiendan'],
+      presentYo: 'extiendo'
+    },
+    tender: {
+      present: ['tiendo', 'tiendes', 'tiende', 'tendemos', 'tendéis', 'tienden'],
+      presentSubjunctive: ['tienda', 'tiendas', 'tienda', 'tendamos', 'tendáis', 'tiendan'],
+      presentYo: 'tiendo'
+    },
+    verter: {
+      present: ['vierto', 'viertes', 'vierte', 'vertemos', 'vertéis', 'vierten'],
+      presentSubjunctive: ['vierta', 'viertas', 'vierta', 'vertamos', 'vertáis', 'viertan'],
+      presentYo: 'vierto'
+    },
+    negar: {
+      present: ['niego', 'niegas', 'niega', 'negamos', 'negáis', 'niegan'],
+      presentSubjunctive: ['niegue', 'niegues', 'niegue', 'neguemos', 'neguéis', 'nieguen'],
+      presentYo: 'niego'
+    },
+    regar: {
+      present: ['riego', 'riegas', 'riega', 'regamos', 'regáis', 'riegan'],
+      presentSubjunctive: ['riegue', 'riegues', 'riegue', 'reguemos', 'reguéis', 'rieguen'],
+      presentYo: 'riego'
+    },
+    mentir: {
+      present: ['miento', 'mientes', 'miente', 'mentimos', 'mentís', 'mienten'],
+      preterite: ['mentí', 'mentiste', 'mintió', 'mentimos', 'mentisteis', 'mintieron'],
+      presentSubjunctive: ['mienta', 'mientas', 'mienta', 'mintamos', 'mintáis', 'mientan'],
+      presentYo: 'miento'
+    },
+    sugerir: {
+      present: ['sugiero', 'sugieres', 'sugiere', 'sugerimos', 'sugerís', 'sugieren'],
+      preterite: ['sugerí', 'sugeriste', 'sugirió', 'sugerimos', 'sugeristeis', 'sugirieron'],
+      presentSubjunctive: ['sugiera', 'sugieras', 'sugiera', 'sugiramos', 'sugiráis', 'sugieran'],
+      presentYo: 'sugiero'
+    },
+    herir: {
+      present: ['hiero', 'hieres', 'hiere', 'herimos', 'herís', 'hieren'],
+      preterite: ['herí', 'heriste', 'hirió', 'herimos', 'heristeis', 'hirieron'],
+      presentSubjunctive: ['hiera', 'hieras', 'hiera', 'hiramos', 'hiráis', 'hieran'],
+      presentYo: 'hiero'
+    },
+    advertir: {
+      present: ['advierto', 'adviertes', 'advierte', 'advertimos', 'advertís', 'advierten'],
+      preterite: ['advertí', 'advertiste', 'advirtió', 'advertimos', 'advertisteis', 'advirtieron'],
+      presentSubjunctive: ['advierta', 'adviertas', 'advierta', 'advirtamos', 'advirtáis', 'adviertan'],
+      presentYo: 'advierto'
+    },
+    convertir: {
+      present: ['convierto', 'conviertes', 'convierte', 'convertimos', 'convertís', 'convierten'],
+      preterite: ['convertí', 'convertiste', 'convirtió', 'convertimos', 'convertisteis', 'convirtieron'],
+      presentSubjunctive: ['convierta', 'conviertas', 'convierta', 'convirtamos', 'convirtáis', 'conviertan'],
+      presentYo: 'convierto'
+    },
+    invertir: {
+      present: ['invierto', 'inviertes', 'invierte', 'invertimos', 'invertís', 'invierten'],
+      preterite: ['invertí', 'invertiste', 'invirtió', 'invertimos', 'invertisteis', 'invirtieron'],
+      presentSubjunctive: ['invierta', 'inviertas', 'invierta', 'invirtamos', 'invirtáis', 'inviertan'],
+      presentYo: 'invierto'
+    },
+    consentir: {
+      present: ['consiento', 'consientes', 'consiente', 'consentimos', 'consentís', 'consienten'],
+      preterite: ['consentí', 'consentiste', 'consintió', 'consentimos', 'consentisteis', 'consintieron'],
+      presentSubjunctive: ['consienta', 'consientas', 'consienta', 'consintamos', 'consintáis', 'consientan'],
+      presentYo: 'consiento'
+    },
+    rendir: {
+      present: ['rindo', 'rindes', 'rinde', 'rendimos', 'rendís', 'rinden'],
+      preterite: ['rendí', 'rendiste', 'rindió', 'rendimos', 'rendisteis', 'rindieron'],
+      presentSubjunctive: ['rinda', 'rindas', 'rinda', 'rindamos', 'rindáis', 'rindan'],
+      presentYo: 'rindo'
+    },
+    despedir: {
+      present: ['despido', 'despides', 'despide', 'despedimos', 'despedís', 'despiden'],
+      preterite: ['despedí', 'despediste', 'despidió', 'despedimos', 'despedisteis', 'despidieron'],
+      presentSubjunctive: ['despida', 'despidas', 'despida', 'despidamos', 'despidáis', 'despidan'],
+      presentYo: 'despido'
+    },
+    impedir: {
+      present: ['impido', 'impides', 'impide', 'impedimos', 'impedís', 'impiden'],
+      preterite: ['impedí', 'impediste', 'impidió', 'impedimos', 'impedisteis', 'impidieron'],
+      presentSubjunctive: ['impida', 'impidas', 'impida', 'impidamos', 'impidáis', 'impidan'],
+      presentYo: 'impido'
+    },
+    competir: {
+      present: ['compito', 'compites', 'compite', 'competimos', 'competís', 'compiten'],
+      preterite: ['competí', 'competiste', 'compitió', 'competimos', 'competisteis', 'compitieron'],
+      presentSubjunctive: ['compita', 'compitas', 'compita', 'compitamos', 'compitáis', 'compitan'],
+      presentYo: 'compito'
+    },
+    corregir: {
+      present: ['corrijo', 'corriges', 'corrige', 'corregimos', 'corregís', 'corrigen'],
+      preterite: ['corregí', 'corregiste', 'corrigió', 'corregimos', 'corregisteis', 'corrigieron'],
+      presentSubjunctive: ['corrija', 'corrijas', 'corrija', 'corrijamos', 'corrijáis', 'corrijan'],
+      presentYo: 'corrijo'
+    },
+    exigir: {
+      present: ['exijo', 'exiges', 'exige', 'exigimos', 'exigís', 'exigen'],
+      presentSubjunctive: ['exija', 'exijas', 'exija', 'exijamos', 'exijáis', 'exijan'],
+      presentYo: 'exijo'
+    },
+    fingir: {
+      present: ['finjo', 'finges', 'finge', 'fingimos', 'fingís', 'fingen'],
+      presentSubjunctive: ['finja', 'finjas', 'finja', 'finjamos', 'finjáis', 'finjan'],
+      presentYo: 'finjo'
+    },
+    escoger: {
+      present: ['escojo', 'escoges', 'escoge', 'escogemos', 'escogéis', 'escogen'],
+      presentSubjunctive: ['escoja', 'escojas', 'escoja', 'escojamos', 'escojáis', 'escojan'],
+      presentYo: 'escojo'
+    },
+    obedecer: {
+      present: ['obedezco', 'obedeces', 'obedece', 'obedecemos', 'obedecéis', 'obedecen'],
+      presentSubjunctive: ['obedezca', 'obedezcas', 'obedezca', 'obedezcamos', 'obedezcáis', 'obedezcan'],
+      presentYo: 'obedezco'
+    },
+    oscurecer: {
+      present: ['oscurezco', 'oscureces', 'oscurece', 'oscurecemos', 'oscurecéis', 'oscurecen'],
+      presentSubjunctive: ['oscurezca', 'oscurezcas', 'oscurezca', 'oscurezcamos', 'oscurezcáis', 'oscurezcan'],
+      presentYo: 'oscurezco'
+    },
+    padecer: {
+      present: ['padezco', 'padeces', 'padece', 'padecemos', 'padecéis', 'padecen'],
+      presentSubjunctive: ['padezca', 'padezcas', 'padezca', 'padezcamos', 'padezcáis', 'padezcan'],
+      presentYo: 'padezco'
+    },
+    reconocer: {
+      present: ['reconozco', 'reconoces', 'reconoce', 'reconocemos', 'reconocéis', 'reconocen'],
+      presentSubjunctive: ['reconozca', 'reconozcas', 'reconozca', 'reconozcamos', 'reconozcáis', 'reconozcan'],
+      presentYo: 'reconozco'
+    },
+    hervir: {
+      present: ['hiervo', 'hierves', 'hierve', 'hervimos', 'hervís', 'hierven'],
+      preterite: ['herví', 'herviste', 'hirvió', 'hervimos', 'hervisteis', 'hirvieron'],
+      presentSubjunctive: ['hierva', 'hiervas', 'hierva', 'hirvamos', 'hirváis', 'hiervan'],
+      presentYo: 'hiervo'
+    },
+    adquirir: {
+      present: ['adquiero', 'adquieres', 'adquiere', 'adquirimos', 'adquirís', 'adquieren'],
+      presentSubjunctive: ['adquiera', 'adquieras', 'adquiera', 'adquiramos', 'adquiráis', 'adquieran'],
+      presentYo: 'adquiero'
+    },
+    proveer: {
+      present: ['proveo', 'provees', 'provee', 'proveemos', 'proveéis', 'proveen'],
+      preterite: ['proveí', 'proveíste', 'proveyó', 'proveímos', 'proveísteis', 'proveyeron'],
+      presentSubjunctive: ['provea', 'proveas', 'provea', 'proveamos', 'proveáis', 'provean'],
+      presentYo: 'proveo', participle: 'provisto', gerund: 'proveyendo'
+    },
+    prohibir: {
+      present: ['prohíbo', 'prohíbes', 'prohíbe', 'prohibimos', 'prohibís', 'prohíben'],
+      presentSubjunctive: ['prohíba', 'prohíbas', 'prohíba', 'prohibamos', 'prohibáis', 'prohíban'],
+      presentYo: 'prohíbo'
+    },
+    variar: {
+      present: ['varío', 'varías', 'varía', 'variamos', 'variáis', 'varían'],
+      presentSubjunctive: ['varíe', 'varíes', 'varíe', 'variemos', 'variéis', 'varíen'],
+      presentYo: 'varío'
+    },
+    vaciar: {
+      present: ['vacío', 'vacías', 'vacía', 'vaciamos', 'vaciáis', 'vacían'],
+      presentSubjunctive: ['vacíe', 'vacíes', 'vacíe', 'vaciemos', 'vaciéis', 'vacíen'],
+      presentYo: 'vacío'
+    },
+    enfriar: {
+      present: ['enfrío', 'enfrías', 'enfría', 'enfriamos', 'enfriáis', 'enfrían'],
+      presentSubjunctive: ['enfríe', 'enfríes', 'enfríe', 'enfriemos', 'enfriéis', 'enfríen'],
+      presentYo: 'enfrío'
+    },
+    obtener: {
+      present: ['obtengo', 'obtienes', 'obtiene', 'obtenemos', 'obtenéis', 'obtienen'],
+      preterite: ['obtuve', 'obtuviste', 'obtuvo', 'obtuvimos', 'obtuvisteis', 'obtuvieron'],
+      future: ['obtendré', 'obtendrás', 'obtendrá', 'obtendremos', 'obtendréis', 'obtendrán'],
+      conditional: ['obtendría', 'obtendrías', 'obtendría', 'obtendríamos', 'obtendríais', 'obtendrían'],
+      presentYo: 'obtengo', gerund: 'obteniendo'
+    },
+    contener: {
+      present: ['contengo', 'contienes', 'contiene', 'contenemos', 'contenéis', 'contienen'],
+      preterite: ['contuve', 'contuviste', 'contuvo', 'contuvimos', 'contuvisteis', 'contuvieron'],
+      future: ['contendré', 'contendrás', 'contendrá', 'contendremos', 'contendréis', 'contendrán'],
+      conditional: ['contendría', 'contendrías', 'contendría', 'contendríamos', 'contendríais', 'contendrían'],
+      presentYo: 'contengo', gerund: 'conteniendo'
+    },
+    retener: {
+      present: ['retengo', 'retienes', 'retiene', 'retenemos', 'retenéis', 'retienen'],
+      preterite: ['retuve', 'retuviste', 'retuvo', 'retuvimos', 'retuvisteis', 'retuvieron'],
+      future: ['retendré', 'retendrás', 'retendrá', 'retendremos', 'retendréis', 'retendrán'],
+      conditional: ['retendría', 'retendrías', 'retendría', 'retendríamos', 'retendríais', 'retendrían'],
+      presentYo: 'retengo', gerund: 'reteniendo'
+    },
+    sostener: {
+      present: ['sostengo', 'sostienes', 'sostiene', 'sostenemos', 'sostenéis', 'sostienen'],
+      preterite: ['sostuve', 'sostuviste', 'sostuvo', 'sostuvimos', 'sostuvisteis', 'sostuvieron'],
+      future: ['sostendré', 'sostendrás', 'sostendrá', 'sostendremos', 'sostendréis', 'sostendrán'],
+      conditional: ['sostendría', 'sostendrías', 'sostendría', 'sostendríamos', 'sostendríais', 'sostendrían'],
+      presentYo: 'sostengo', gerund: 'sosteniendo'
+    },
+    entretener: {
+      present: ['entretengo', 'entretienes', 'entretiene', 'entretenemos', 'entretenéis', 'entretienen'],
+      preterite: ['entretuve', 'entretuviste', 'entretuvo', 'entretuvimos', 'entretuvisteis', 'entretuvieron'],
+      future: ['entretendré', 'entretendrás', 'entretendrá', 'entretendremos', 'entretendréis', 'entretendrán'],
+      conditional: ['entretendría', 'entretendrías', 'entretendría', 'entretendríamos', 'entretendríais', 'entretendrían'],
+      presentYo: 'entretengo', gerund: 'entreteniendo'
+    },
+    prevenir: {
+      present: ['prevengo', 'previenes', 'previene', 'prevenimos', 'prevenís', 'previenen'],
+      preterite: ['previne', 'previniste', 'previno', 'previnimos', 'previnisteis', 'previnieron'],
+      future: ['prevendré', 'prevendrás', 'prevendrá', 'prevendremos', 'prevendréis', 'prevendrán'],
+      conditional: ['prevendría', 'prevendrías', 'prevendría', 'prevendríamos', 'prevendríais', 'prevendrían'],
+      presentYo: 'prevengo', gerund: 'previniendo'
+    },
+    intervenir: {
+      present: ['intervengo', 'intervienes', 'interviene', 'intervenimos', 'intervenís', 'intervienen'],
+      preterite: ['intervine', 'interviniste', 'intervino', 'intervinimos', 'intervinisteis', 'intervinieron'],
+      future: ['intervendré', 'intervendrás', 'intervendrá', 'intervendremos', 'intervendréis', 'intervendrán'],
+      conditional: ['intervendría', 'intervendrías', 'intervendría', 'intervendríamos', 'intervendríais', 'intervendrían'],
+      presentYo: 'intervengo', gerund: 'interviniendo'
+    },
+    componer: {
+      present: ['compongo', 'compones', 'compone', 'componemos', 'componéis', 'componen'],
+      preterite: ['compuse', 'compusiste', 'compuso', 'compusimos', 'compusisteis', 'compusieron'],
+      future: ['compondré', 'compondrás', 'compondrá', 'compondremos', 'compondréis', 'compondrán'],
+      conditional: ['compondría', 'compondrías', 'compondría', 'compondríamos', 'compondríais', 'compondrían'],
+      presentYo: 'compongo', participle: 'compuesto'
+    },
+    suponer: {
+      present: ['supongo', 'supones', 'supone', 'suponemos', 'suponéis', 'suponen'],
+      preterite: ['supuse', 'supusiste', 'supuso', 'supusimos', 'supusisteis', 'supusieron'],
+      future: ['supondré', 'supondrás', 'supondrá', 'supondremos', 'supondréis', 'supondrán'],
+      conditional: ['supondría', 'supondrías', 'supondría', 'supondríamos', 'supondríais', 'supondrían'],
+      presentYo: 'supongo', participle: 'supuesto'
+    },
+    proponer: {
+      present: ['propongo', 'propones', 'propone', 'proponemos', 'proponéis', 'proponen'],
+      preterite: ['propuse', 'propusiste', 'propuso', 'propusimos', 'propusisteis', 'propusieron'],
+      future: ['propondré', 'propondrás', 'propondrá', 'propondremos', 'propondréis', 'propondrán'],
+      conditional: ['propondría', 'propondrías', 'propondría', 'propondríamos', 'propondríais', 'propondrían'],
+      presentYo: 'propongo', participle: 'propuesto'
+    },
+    disponer: {
+      present: ['dispongo', 'dispones', 'dispone', 'disponemos', 'disponéis', 'disponen'],
+      preterite: ['dispuse', 'dispusiste', 'dispuso', 'dispusimos', 'dispusisteis', 'dispusieron'],
+      future: ['dispondré', 'dispondrás', 'dispondrá', 'dispondremos', 'dispondréis', 'dispondrán'],
+      conditional: ['dispondría', 'dispondrías', 'dispondría', 'dispondríamos', 'dispondríais', 'dispondrían'],
+      presentYo: 'dispongo', participle: 'dispuesto'
+    },
+    imponer: {
+      present: ['impongo', 'impones', 'impone', 'imponemos', 'imponéis', 'imponen'],
+      preterite: ['impuse', 'impusiste', 'impuso', 'impusimos', 'impusisteis', 'impusieron'],
+      future: ['impondré', 'impondrás', 'impondrá', 'impondremos', 'impondréis', 'impondrán'],
+      conditional: ['impondría', 'impondrías', 'impondría', 'impondríamos', 'impondríais', 'impondrían'],
+      presentYo: 'impongo', participle: 'impuesto'
+    },
+    exponer: {
+      present: ['expongo', 'expones', 'expone', 'exponemos', 'exponéis', 'exponen'],
+      preterite: ['expuse', 'expusiste', 'expuso', 'expusimos', 'expusisteis', 'expusieron'],
+      future: ['expondré', 'expondrás', 'expondrá', 'expondremos', 'expondréis', 'expondrán'],
+      conditional: ['expondría', 'expondrías', 'expondría', 'expondríamos', 'expondríais', 'expondrían'],
+      presentYo: 'expongo', participle: 'expuesto'
+    },
+    posponer: {
+      present: ['pospongo', 'pospones', 'pospone', 'posponemos', 'posponéis', 'posponen'],
+      preterite: ['pospuse', 'pospusiste', 'pospuso', 'pospusimos', 'pospusisteis', 'pospusieron'],
+      future: ['pospondré', 'pospondrás', 'pospondrá', 'pospondremos', 'pospondréis', 'pospondrán'],
+      conditional: ['pospondría', 'pospondrías', 'pospondría', 'pospondríamos', 'pospondríais', 'pospondrían'],
+      presentYo: 'pospongo', participle: 'pospuesto'
+    },
+    reducir: {
+      present: ['reduzco', 'reduces', 'reduce', 'reducimos', 'reducís', 'reducen'],
+      preterite: ['reduje', 'redujiste', 'redujo', 'redujimos', 'redujisteis', 'redujeron'],
+      presentSubjunctive: ['reduzca', 'reduzcas', 'reduzca', 'reduzcamos', 'reduzcáis', 'reduzcan'],
+      presentYo: 'reduzco'
+    }
+  };
+
+  const memoryVerbs = [...new Set([...commonVerbs, ...moreVerbs])];
+  const overridesByLemma = { ...extraOverrides, ...irregular, ...correctedOverrides, ...moreOverrides };
+  memoryVerbs.forEach(lemma => registerVerb(lemma, overridesByLemma[lemma] || {}));
   Object.entries(overridesByLemma).forEach(([lemma, overrides]) => {
-    if (!commonVerbs.includes(lemma)) registerVerb(lemma, overrides);
+    if (!memoryVerbs.includes(lemma)) registerVerb(lemma, overrides);
   });
 
   const reflexiveVerbs = new Set(`acostar despertar dormir lavar levantar llamar sentar vestir ir quedar bañar duchar arrepentir desvanecer parecer`.split(/\s+/));
@@ -681,5 +1232,55 @@
       if (detail && !details.some(item => item.form === detail.form && item.infinitive === detail.infinitive)) details.push(detail);
     });
     return details;
+  };
+
+  /* --- Verb memory bank ---------------------------------------------------
+   * The flashcard verb section is driven by this API. Every verb known to the
+   * engine (built-in or added by the reader) has one catalog entry with its
+   * present and past forms, plus whether it is regular. */
+  const PERSON_LABELS = ['yo', 'tú', 'él / ella / usted', 'nosotros/as', 'vosotros/as', 'ellos / ellas / ustedes'];
+
+  function catalogEntry(lemma, reflexive = false) {
+    const entry = verbCatalog.get(normalize(lemma));
+    if (!entry) return null;
+    if (!reflexive) return entry;
+    return { ...entry, infinitive: `${entry.infinitive}se`, reflexive: true };
+  }
+
+  window.spanishVerbBank = {
+    persons: PERSONS.slice(),
+    personLabels: PERSON_LABELS.slice(),
+    size: () => verbCatalog.size,
+    all: () => [...verbCatalog.values()].sort((a, b) => a.infinitive.localeCompare(b.infinitive, 'es')),
+    has: lemma => verbCatalog.has(normalize(lemma).replace(/se$/, '')),
+    get: lemma => {
+      const key = normalize(lemma);
+      const direct = catalogEntry(key);
+      if (direct) return direct;
+      if (key.endsWith('se')) return catalogEntry(key.slice(0, -2), true);
+      return null;
+    },
+    // Add a verb the reader asked the app to remember. Known verbs keep their
+    // stored irregular forms; new ones are conjugated with the regular pattern.
+    add: lemma => {
+      const key = normalize(lemma);
+      if (!/(ar|er|ir)$/.test(key)) return null;
+      if (!verbCatalog.has(key)) registerVerb(lemma.trim(), {});
+      return catalogEntry(key) || null;
+    },
+    // Which verbs of the memory does this saved expression contain?
+    matchText: (selectedText, passageText = '', start = 0) => {
+      const details = window.analyzeSpanishVerbs(selectedText, passageText, start);
+      const found = [];
+      details.forEach(detail => {
+        String(detail.infinitive || '').split('/').map(part => part.trim()).filter(Boolean).forEach(lemma => {
+          const entry = window.spanishVerbBank.get(lemma);
+          if (entry && !found.some(item => item.infinitive === entry.infinitive)) {
+            found.push({ ...entry, matchedForm: detail.form, matchedTense: detail.tense });
+          }
+        });
+      });
+      return found;
+    }
   };
 })();
