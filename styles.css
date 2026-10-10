@@ -277,3 +277,42 @@ body:has(.selection-actions.is-active) .app-version { padding-bottom: 155px; }
   .toolbar-actions { gap:6px; }
   .live-toolbar-button { flex:1 1 auto; }
 }
+
+/* Verb practice section: cards that carry a conjugation table */
+.verb-flashcard{height:auto;min-height:340px;padding:30px 24px;align-items:flex-start}
+.verb-flashcard .card-content{width:100%}
+.verb-prompt{margin:0 0 14px;color:#8b9994;font-size:12px}
+.verb-card-reveal{width:min(100%,420px);text-align:left}
+.verb-answer{margin-bottom:14px}
+.verb-answer b{color:var(--orange);font:500 11px 'DM Mono';letter-spacing:.8px;text-transform:none;display:block;margin-bottom:3px}
+.verb-answer>span{font:500 10px 'DM Mono';letter-spacing:1px;text-transform:uppercase;color:#93a29b}
+.verb-table-wrap{overflow-x:auto}
+.verb-table{width:100%;border-collapse:collapse;font-size:14px}
+.verb-table caption{caption-side:top;text-align:left;padding:0 0 9px;color:#93a29b;font:10px 'DM Mono';letter-spacing:.6px}
+.verb-table th,.verb-table td{padding:7px 9px;border-bottom:1px solid #e9ede7;text-align:left}
+.verb-table thead th{color:#9aa8a1;font:500 9px 'DM Mono';letter-spacing:.9px;text-transform:uppercase;border-bottom:1px solid var(--line)}
+.verb-table tbody th{color:#8b9994;font:400 12px 'DM Sans';white-space:nowrap}
+.verb-table tbody td{color:var(--deep);font-family:Fraunces,serif;font-size:17px}
+.verb-infinitive-row th,.verb-infinitive-row td{background:#f4f7f1}
+.verb-infinitive-row td{color:var(--orange);font-weight:600}
+.verb-table-extra{margin:10px 0 0;color:#93a29b;font-size:11px}
+.verb-memory-card{background:#edf3ed;border-radius:5px;padding:21px 20px;margin-top:20px}
+.verb-memory-card .eyebrow{margin:0 0 12px;display:flex;justify-content:space-between;gap:8px}
+.verb-memory-card .eyebrow span{color:#8aa08f;text-transform:none;letter-spacing:.4px}
+.verb-memory-card label{display:block;color:#63766e;font-size:11px;font-weight:600;margin:0 0 10px}
+.verb-memory-card input{display:block;width:100%;margin-top:7px;border:1px solid #d9e1d9;border-radius:3px;padding:10px;font:14px 'DM Sans';color:var(--ink);background:#fff}
+.verb-memory-card .translation-helper{margin-top:9px}
+.verb-memory-list{list-style:none;margin:16px 0 0;padding:0;max-height:260px;overflow-y:auto}
+.verb-memory-item{display:flex;align-items:center;gap:6px;border-top:1px solid #dbe5db}
+.verb-memory-item.learned{opacity:.6}
+.verb-memory-button{flex:1;min-width:0;background:none;border:0;padding:10px 2px;text-align:left;cursor:pointer;color:var(--ink)}
+.verb-memory-button strong{display:block;font:600 14px Fraunces,serif;color:var(--deep)}
+.verb-memory-button span{font:10px 'DM Mono';color:#8b9a94}
+.verb-memory-remove{border:0;background:none;color:#a8b4ad;font-size:17px;line-height:1;cursor:pointer;padding:8px 6px}
+.verb-memory-remove:hover{color:var(--orange)}
+.verb-memory-list .translation-helper{margin:12px 0 0}
+@media(max-width:550px){
+  .verb-flashcard{padding:24px 16px}
+  .verb-table tbody td{font-size:15px}
+  .verb-memory-card{margin-top:0}
+}

@@ -37,6 +37,7 @@ function loadState() {
 }
 
 let state = loadState();
+ensureVerbState();
 let pendingText = '';
 let pendingStart = null;
 let pendingEnd = null;
@@ -50,6 +51,7 @@ let tapWordsEnabled = typeof state.settings.tapWordsEnabled === 'boolean'
   : navigator.maxTouchPoints > 0;
 let passageEditingId = '';
 let revealedCardId = '';
+let revealedVerbCardId = '';
 const $ = id => document.getElementById(id);
 
 function save() {
@@ -183,6 +185,7 @@ function render() {
 
   const savedCount = state.passages.reduce((total, item) => total + item.highlights.filter(highlight => !highlight.learned).length, 0);
   $('navCount').textContent = savedCount;
+  $('verbNavCount').textContent = state.verbs.filter(verb => !verb.learned).length;
   $('clearHighlights').disabled = !passage || !passage.highlights.length;
   $('passageMenuToggle').disabled = !passage;
   $('editPassageBtn').disabled = !passage;
@@ -386,6 +389,243 @@ function renderReview() {
     card.innerHTML = `<div class="empty-state"><div class="empty-icon">✦</div><h2>${passage.highlights.length ? 'Your review is clear.' : 'Nothing saved yet.'}</h2><p>${passage.highlights.length ? 'You made it through every card in this passage.' : 'Highlight a word while reading and it will appear here.'}</p><button class="primary-button" type="button" data-view="reader">${passage.highlights.length ? 'Keep reading' : 'Go to reader'}</button></div>`;
     $('answerActions').style.display = 'none';
   }
+}
+
+/* --- Verb flashcards ------------------------------------------------------
+ * Saving an expression that contains a verb from the app's verb memory also
+ * creates a card in the Verbs section, where only verbs and their forms are
+ * practised. A regular verb card carries the to-be (infinitive) form plus the
+ * first person present and past. An irregular verb card carries the present
+ * and the past for every person. */
+const VERB_CARD_DIRECTIONS = ['conjugate', 'identify'];
+
+function verbBank() {
+  return typeof window.spanishVerbBank === 'object' && window.spanishVerbBank ? window.spanishVerbBank : null;
+}
+
+function ensureVerbState() {
+  if (!Array.isArray(state.verbs)) state.verbs = [];
+  if (!Array.isArray(state.customVerbs)) state.customVerbs = [];
+  if (!Array.isArray(state.verbQueue)) state.verbQueue = [];
+  if (!Array.isArray(state.verbRepeatQueue)) state.verbRepeatQueue = [];
+  state.verbRound = Number(state.verbRound) || 1;
+  state.verbs = state.verbs.filter(verb => verb && typeof verb.lemma === 'string' && verb.lemma);
+  state.verbs.forEach(verb => {
+    verb.id = typeof verb.id === 'string' && verb.id ? verb.id : `v${Math.random().toString(36).slice(2, 9)}`;
+    verb.cards = verb.cards && typeof verb.cards === 'object' ? verb.cards : {};
+    verb.sources = Array.isArray(verb.sources) ? verb.sources : [];
+    verb.learned = verb.learned === true;
+  });
+  state.customVerbs = state.customVerbs.filter(lemma => typeof lemma === 'string' && lemma);
+}
+
+function verbEntry(lemma) {
+  const bank = verbBank();
+  return bank ? bank.get(lemma) : null;
+}
+
+function verbCorrectCount(verb, direction) {
+  return Math.max(0, Number(verb.cards?.[direction]) || 0);
+}
+
+function upsertVerbCard(lemma, source) {
+  const entry = verbEntry(lemma);
+  if (!entry) return null;
+  const key = entry.infinitive;
+  const existing = state.verbs.find(verb => verb.lemma === key);
+  if (existing) {
+    existing.regular = entry.regular;
+    if (source && !existing.sources.some(item => item.highlightId === source.highlightId)) existing.sources.push(source);
+    return { verb: existing, added: false };
+  }
+  const verb = {
+    id: `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+    lemma: key,
+    regular: entry.regular,
+    sources: source ? [source] : [],
+    manual: !source,
+    cards: { conjugate: 0, identify: 0 },
+    learned: false
+  };
+  state.verbs.push(verb);
+  return { verb, added: true };
+}
+
+// Which verbs of the memory does this saved expression contain?
+function syncVerbCardsForHighlight(passage, highlight) {
+  const bank = verbBank();
+  if (!bank || !passage || !highlight) return [];
+  const added = [];
+  bank.matchText(highlight.phrase, passage.text, highlight.start).forEach(entry => {
+    const result = upsertVerbCard(entry.infinitive, {
+      passageId: passage.id,
+      highlightId: highlight.id,
+      phrase: highlight.phrase
+    });
+    if (result?.added) added.push(entry.infinitive);
+  });
+  return added;
+}
+
+// Backfill: expressions saved before the Verbs section existed still count.
+function hydrateVerbCards() {
+  const bank = verbBank();
+  if (!bank) return;
+  state.customVerbs.forEach(lemma => bank.add(lemma));
+  state.passages.forEach(passage => passage.highlights.forEach(highlight => syncVerbCardsForHighlight(passage, highlight)));
+  // Cards whose verb left the memory (for example a cleared custom verb) are dropped.
+  state.verbs = state.verbs.filter(verb => Boolean(verbEntry(verb.lemma)));
+  ensureVerbState();
+}
+
+function makeVerbQueue(available) {
+  return VERB_CARD_DIRECTIONS.flatMap(direction => available
+    .filter(verb => verbCorrectCount(verb, direction) < CORRECT_ANSWERS_TO_LEARN)
+    .map(verb => `${verb.id}-${direction}`));
+}
+
+function findVerbCard(id) {
+  if (typeof id !== 'string') return null;
+  const verb = state.verbs.find(item => id.startsWith(`${item.id}-`));
+  return verb ? { verb, direction: id.endsWith('identify') ? 'identify' : 'conjugate' } : null;
+}
+
+function syncVerbQueue() {
+  state.verbs.forEach(verb => {
+    if (VERB_CARD_DIRECTIONS.every(direction => verbCorrectCount(verb, direction) >= CORRECT_ANSWERS_TO_LEARN)) verb.learned = true;
+  });
+  const available = state.verbs.filter(verb => !verb.learned);
+  const valid = makeVerbQueue(available);
+  const validIds = new Set(valid);
+  const queued = new Set();
+  state.verbQueue = state.verbQueue.filter(id => {
+    if (!validIds.has(id) || queued.has(id)) return false;
+    queued.add(id);
+    return true;
+  });
+  state.verbRepeatQueue = state.verbRepeatQueue.filter(id => {
+    if (!validIds.has(id) || queued.has(id)) return false;
+    queued.add(id);
+    return true;
+  });
+  state.verbQueue.push(...valid.filter(id => !queued.has(id)));
+  if (!state.verbQueue.length && state.verbRepeatQueue.length) {
+    state.verbQueue = state.verbRepeatQueue;
+    state.verbRepeatQueue = [];
+    state.verbRound = (state.verbRound || 1) + 1;
+  }
+  return { available, valid };
+}
+
+function prioritizeNextVerb(previousVerbId) {
+  const isAnotherVerb = id => findVerbCard(id)?.verb.id !== previousVerbId;
+  let nextIndex = state.verbQueue.findIndex(isAnotherVerb);
+  if (nextIndex > 0) state.verbQueue.unshift(state.verbQueue.splice(nextIndex, 1)[0]);
+}
+
+function verbGloss(lemma) {
+  const base = String(lemma || '').replace(/se$/, '');
+  return String(verbInfinitiveEn[lemma] || verbInfinitiveEn[base] || offlineTranslateWord(base, 'en') || '').trim();
+}
+
+// The form shown on a “which verb is this?” card. Stable inside a round, but
+// it moves on each round so every person gets practised.
+function verbPracticeForm(entry) {
+  const bank = verbBank();
+  const persons = bank ? bank.personLabels : [];
+  const pool = entry.regular
+    ? [{ form: entry.present[0], label: 'Present · yo' }, { form: entry.preterite[0], label: 'Past · preterite · yo' }]
+    : persons.flatMap((person, index) => [
+      { form: entry.present[index], label: `Present · ${person}` },
+      { form: entry.preterite[index], label: `Past · preterite · ${person}` }
+    ]);
+  if (!pool.length) return { form: entry.infinitive, label: 'Infinitive' };
+  return pool[(Math.max(1, state.verbRound || 1) - 1) % pool.length];
+}
+
+function verbTableMarkup(entry) {
+  const bank = verbBank();
+  const persons = bank ? bank.personLabels : [];
+  const rows = entry.regular
+    ? [['yo', entry.present[0], entry.preterite[0]]]
+    : persons.map((person, index) => [person, entry.present[index], entry.preterite[index]]);
+  const body = rows.map(([person, present, past]) => `<tr><th scope="row">${escapeHtml(person)}</th><td lang="es">${escapeHtml(present)}</td><td lang="es">${escapeHtml(past)}</td></tr>`).join('');
+  const caption = entry.regular
+    ? 'Regular verb · the other persons follow from these.'
+    : `Irregular verb · ${entry.irregularIn.length ? entry.irregularIn.join(' and ') : 'present and past'} break the pattern.`;
+  const extra = entry.otherIrregular.length
+    ? `<p class="verb-table-extra">Also irregular: ${escapeHtml(entry.otherIrregular.join(', '))}.</p>`
+    : '';
+  return `<div class="verb-table-wrap"><table class="verb-table"><caption>${escapeHtml(caption)}</caption><thead><tr><th scope="col">Person</th><th scope="col">Present</th><th scope="col">Past · preterite</th></tr></thead><tbody><tr class="verb-infinitive-row"><th scope="row">To-be form</th><td colspan="2" lang="es">${escapeHtml(entry.infinitive)}</td></tr>${body}</tbody></table>${extra}</div>`;
+}
+
+function renderVerbMemory() {
+  const bank = verbBank();
+  $('verbMemoryCount').textContent = bank ? `${bank.size()} verbs in memory` : '';
+  const inProgress = state.verbs.filter(verb => !verb.learned);
+  const learned = state.verbs.length - inProgress.length;
+  $('verbLearnedFraction').textContent = `${learned} / ${state.verbs.length} learned`;
+  $('verbLearnedProgress').style.width = state.verbs.length ? `${learned / state.verbs.length * 100}%` : '0%';
+  $('verbMemoryList').innerHTML = state.verbs.length
+    ? state.verbs
+      .slice()
+      .sort((a, b) => (a.learned === b.learned ? a.lemma.localeCompare(b.lemma, 'es') : a.learned ? 1 : -1))
+      .map(verb => `<li class="verb-memory-item ${verb.learned ? 'learned' : ''}"><button class="verb-memory-button" type="button" data-verb-focus="${escapeHtml(verb.id)}"><strong lang="es">${escapeHtml(verb.lemma)}</strong><span>${verb.regular ? 'regular' : 'irregular'} · ${verbCorrectCount(verb, 'conjugate') + verbCorrectCount(verb, 'identify')} of ${CORRECT_ANSWERS_TO_LEARN * 2}</span></button><button class="verb-memory-remove" type="button" data-verb-remove="${escapeHtml(verb.id)}" aria-label="Remove ${escapeHtml(verb.lemma)}">×</button></li>`)
+      .join('')
+    : '<p class="translation-helper">No verb cards yet. Save an expression that contains a known verb and it appears here.</p>';
+}
+
+function renderVerbs() {
+  ensureVerbState();
+  const card = $('verbCard');
+  const { available, valid } = syncVerbQueue();
+  const current = findVerbCard(state.verbQueue[0]);
+  const revealed = current && revealedVerbCardId === state.verbQueue[0];
+
+  $('verbRoundLabel').textContent = `ROUND ${state.verbRound || 1}`;
+  $('verbQueueLabel').textContent = `${state.verbQueue.length} verb cards left this round`;
+  const cardsThisRound = state.verbQueue.length + state.verbRepeatQueue.length;
+  $('verbRoundProgress').style.width = cardsThisRound ? `${state.verbRepeatQueue.length / cardsThisRound * 100}%` : '0%';
+  $('verbNavCount').textContent = available.length;
+  $('verbStatus').textContent = state.verbs.length
+    ? (available.length ? `${available.length} verbs in progress · ${valid.length} cards` : 'Every verb card is learned — lovely work!')
+    : 'Save an expression containing a verb to start';
+
+  if (!current) {
+    card.className = 'flashcard empty';
+    card.innerHTML = `<div class="empty-state"><div class="empty-icon">✦</div><h2>${state.verbs.length ? 'Your verb practice is clear.' : 'No verbs here yet.'}</h2><p>${state.verbs.length ? 'Every saved verb has been practised five times in both directions.' : 'Save a word or phrase while reading. If it contains a known verb, a verb card appears here.'}</p><button class="primary-button" type="button" data-view="reader">Go to reader</button></div>`;
+    $('verbAnswerActions').style.display = 'none';
+    renderVerbMemory();
+    save();
+    return;
+  }
+
+  const { verb, direction } = current;
+  const entry = verbEntry(verb.lemma);
+  if (!entry) {
+    state.verbs = state.verbs.filter(item => item.id !== verb.id);
+    renderVerbs();
+    return;
+  }
+  const gloss = verbGloss(entry.infinitive);
+  const kind = entry.regular ? 'REGULAR VERB' : 'IRREGULAR VERB';
+  const practice = direction === 'identify' ? verbPracticeForm(entry) : null;
+  const front = direction === 'identify' ? practice.form : entry.infinitive;
+  const label = direction === 'identify'
+    ? `WHICH VERB IS THIS? · ${practice.label.toUpperCase()}`
+    : `CONJUGATE · ${kind}`;
+  const prompt = direction === 'identify'
+    ? 'Name the infinitive, then recall the other forms.'
+    : (entry.regular ? 'To-be form, then present and past for yo.' : 'Present and past for every person.');
+  const count = verbCorrectCount(verb, direction);
+  const answer = `<div class="answer-copy verb-answer"><b>${escapeHtml(entry.infinitive)}${gloss ? ` · ${escapeHtml(gloss)}` : ''}</b><span>${escapeHtml(kind.toLowerCase())}</span></div>${verbTableMarkup(entry)}`;
+  const revealLabel = revealed ? 'Hide answer' : (direction === 'identify' ? 'Show the verb' : 'Show the forms');
+
+  card.className = 'flashcard verb-flashcard';
+  card.innerHTML = `<div class="card-content"><p class="card-label">${escapeHtml(label)}</p><h2 class="card-word" lang="es">${escapeHtml(front)}</h2><p class="verb-prompt">${escapeHtml(direction === 'identify' ? prompt : (gloss || prompt))}</p><button class="reveal-button" type="button" data-verb-action="toggle" aria-controls="verbReveal" aria-expanded="${Boolean(revealed)}">${revealLabel}</button><div class="card-reveal verb-card-reveal" id="verbReveal"${revealed ? '' : ' hidden'}>${answer}</div><p class="card-label" style="margin-top:18px">${count} of ${CORRECT_ANSWERS_TO_LEARN} correct · ${direction === 'conjugate' ? 'Card 1 of 2' : 'Card 2 of 2'}</p></div>`;
+  $('verbAnswerActions').style.display = 'grid';
+  renderVerbMemory();
+  save();
 }
 
 /* --- Enhanced dictionaries and translation engine v2 --- */
@@ -1836,6 +2076,7 @@ function switchView(view) {
   document.querySelectorAll('.view').forEach(element => element.classList.toggle('active', element.id === `${view}View`));
   document.querySelectorAll('.nav-link').forEach(element => element.classList.toggle('active', element.dataset.view === view));
   if (view === 'review') renderReview();
+  if (view === 'verbs') renderVerbs();
 }
 
 function domPointToTextOffset(root, node, offset) {
@@ -2248,10 +2489,14 @@ $('saveHighlight').addEventListener('click', () => {
     cards: { 'es-en': 0, 'en-es': 0 },
     learned: false
   });
+  const newHighlight = passage.highlights[passage.highlights.length - 1];
+  const newVerbs = syncVerbCardsForHighlight(passage, newHighlight);
   closeHighlightModal(false);
   resetSelectionHint();
   render();
-  showToast('Translation added to your flashcards');
+  showToast(newVerbs.length
+    ? `Added to your flashcards · ${newVerbs.length} verb card${newVerbs.length === 1 ? '' : 's'} added (${newVerbs.join(', ')})`
+    : 'Translation added to your flashcards');
 });
 
 ['closeModal', 'cancelModal'].forEach(id => $(id).addEventListener('click', () => closeHighlightModal()));
@@ -2371,6 +2616,98 @@ $('flashcard').addEventListener('click', event => {
   renderReview();
 });
 
+/* --- Verb section interaction --- */
+$('verbCard').addEventListener('click', event => {
+  const toggle = event.target.closest('[data-verb-action="toggle"]');
+  if (!toggle) return;
+  const currentId = state.verbQueue[0];
+  revealedVerbCardId = revealedVerbCardId === currentId ? '' : currentId;
+  renderVerbs();
+});
+
+$('verbWrongBtn').addEventListener('click', () => answerVerb(false));
+$('verbRightBtn').addEventListener('click', () => answerVerb(true));
+
+function answerVerb(correct) {
+  const id = state.verbQueue[0];
+  const card = findVerbCard(id);
+  if (!card) {
+    syncVerbQueue();
+    renderVerbs();
+    return;
+  }
+  state.verbQueue.shift();
+  const verb = card.verb;
+  verb.cards = { conjugate: verbCorrectCount(verb, 'conjugate'), identify: verbCorrectCount(verb, 'identify') };
+  if (correct) verb.cards[card.direction] = Math.min(CORRECT_ANSWERS_TO_LEARN, verb.cards[card.direction] + 1);
+  const directionCount = verb.cards[card.direction];
+  if (VERB_CARD_DIRECTIONS.every(direction => verb.cards[direction] >= CORRECT_ANSWERS_TO_LEARN)) verb.learned = true;
+  if (!verb.learned && directionCount < CORRECT_ANSWERS_TO_LEARN) state.verbRepeatQueue.push(id);
+  revealedVerbCardId = '';
+  syncVerbQueue();
+  prioritizeNextVerb(verb.id);
+  renderVerbs();
+  showToast(verb.learned
+    ? `${verb.lemma} is learned in both directions.`
+    : (!correct
+      ? 'No problem. It will come back around.'
+      : (directionCount >= CORRECT_ANSWERS_TO_LEARN
+        ? 'Great — this direction is set. The other direction is next.'
+        : `Nice. ${CORRECT_ANSWERS_TO_LEARN - directionCount} more correct in this direction.`)));
+}
+
+$('addVerbForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const bank = verbBank();
+  const input = $('addVerbInput');
+  if (!bank) return;
+  const wanted = input.value.split(/[,\n;]+|\s{2,}/).map(part => part.trim().toLowerCase()).filter(Boolean);
+  if (!wanted.length) {
+    showToast('Type one or more infinitives, like escribir, volver');
+    return;
+  }
+  const added = [];
+  const skipped = [];
+  wanted.forEach(lemma => {
+    const entry = bank.add(lemma);
+    if (!entry) {
+      skipped.push(lemma);
+      return;
+    }
+    if (!state.customVerbs.includes(entry.infinitive)) state.customVerbs.push(entry.infinitive);
+    const result = upsertVerbCard(entry.infinitive);
+    if (result) added.push(entry.infinitive);
+  });
+  input.value = '';
+  renderVerbs();
+  showToast(skipped.length
+    ? `Not recognised as verbs: ${skipped.join(', ')}`
+    : `${added.length} verb${added.length === 1 ? '' : 's'} in your practice: ${added.join(', ')}`);
+});
+
+$('verbMemoryList').addEventListener('click', event => {
+  const remove = event.target.closest('[data-verb-remove]');
+  if (remove) {
+    const id = remove.dataset.verbRemove;
+    const verb = state.verbs.find(item => item.id === id);
+    state.verbs = state.verbs.filter(item => item.id !== id);
+    state.customVerbs = state.customVerbs.filter(lemma => lemma !== verb?.lemma);
+    state.verbQueue = state.verbQueue.filter(cardId => !cardId.startsWith(`${id}-`));
+    state.verbRepeatQueue = state.verbRepeatQueue.filter(cardId => !cardId.startsWith(`${id}-`));
+    revealedVerbCardId = '';
+    renderVerbs();
+    showToast(`${verb?.lemma || 'Verb'} removed from your practice`);
+    return;
+  }
+  const focus = event.target.closest('[data-verb-focus]');
+  if (!focus) return;
+  const id = focus.dataset.verbFocus;
+  const next = state.verbQueue.findIndex(cardId => cardId.startsWith(`${id}-`));
+  if (next > 0) state.verbQueue.unshift(state.verbQueue.splice(next, 1)[0]);
+  revealedVerbCardId = '';
+  renderVerbs();
+});
+
 function answer(correct) {
   const passage = activePassage();
   if (!passage) return;
@@ -2408,6 +2745,7 @@ function answer(correct) {
 }
 
 const phrasesNeedingTranslationReview = migrateSavedTranslations();
+hydrateVerbCards();
 syncFarsiControls();
 syncLiveTranslationControls();
 render();
