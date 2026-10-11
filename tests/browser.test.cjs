@@ -185,7 +185,9 @@ test('saved translations and review progress survive upgrade and passage edit', 
   };
   const session = await newPage({}, state);
   const { page } = session;
-  assert.equal((await getState(page)).passages[0].highlights[0].translation, 'A blue home, in context');
+  const migrated = (await getState(page)).passages[0].highlights[0];
+  assert.equal(migrated.translation, 'A blue home, in context');
+  assert.equal(migrated.translationVersion, 4, 'legacy saved translations are versioned for review without being overwritten');
   await page.locator('#editPassageBtn').click();
   await page.locator('#passageTextInput').fill('Aquí hay una casa azul.');
   await page.locator('#savePassageButton').click();
@@ -194,6 +196,27 @@ test('saved translations and review progress survive upgrade and passage edit', 
   assert.equal(highlight.translationFa, 'خانهٔ آبی');
   assert.deepEqual(highlight.cards, { 'es-en': 3, 'en-es': 1 });
   assert.equal(await page.locator('#readingText mark').textContent(), 'casa azul');
+  await session.close();
+});
+
+test('legacy phrases that conflict with reviewed translations are preserved and flagged', async () => {
+  const state = {
+    passages: [{ id: 'p1', title: 'Legacy phrase', text: 'Me senté a su lado. Senté a mi abuela en la silla.', highlights: [
+      { id: 'h1', phrase: 'Me senté a su lado', start: 0, end: 19, translation: 'I sat beside her', translationFa: 'کنارش نشستم', translationVersion: 2 },
+      { id: 'h2', phrase: 'senté', start: 20, end: 25, translation: 'I sat down', translationFa: 'نشستم', translationVersion: 2 }
+    ] }],
+    active: 'p1', settings: { liveTranslationEnabled: false }
+  };
+  const session = await newPage({}, state);
+  const { page } = session;
+  const highlights = (await getState(page)).passages[0].highlights;
+  assert.equal(highlights[0].translation, 'I sat beside her', 'never discard a user’s saved translation');
+  assert.equal(highlights[0].translationFa, 'کنارش نشستم');
+  assert.equal(highlights[0].translationVersion, 4);
+  assert.equal(highlights[1].translation, 'I sat down', 'keep the old transitive verb translation visible for review');
+  assert.equal(highlights[1].translationFa, 'نشستم');
+  assert.equal(highlights[1].translationVersion, 4);
+  assert.match(await page.locator('#toast').textContent(), /2 saved translations may need review/i);
   await session.close();
 });
 
@@ -209,6 +232,189 @@ test('unknown phrases ask for a translation instead of inventing Farsi', async (
   await page.locator('#farsiTranslationInput').fill('به خانه');
   await page.locator('#saveHighlight').click();
   assert.equal((await getState(page)).passages[0].highlights[0].translationFa, 'به خانه');
+  await session.close();
+});
+
+test('audited translations distinguish verb meaning, context, and accent-sensitive words', async () => {
+  const session = await newPage();
+  const { page } = session;
+  const actual = await page.evaluate(() => ({
+    verbs: {
+      despertar: verbGloss('despertar'),
+      despertarse: verbGloss('despertarse'),
+      sentar: verbGloss('sentar'),
+      sentarse: verbGloss('sentarse'),
+      levantar: verbGloss('levantar'),
+      levantarse: verbGloss('levantarse'),
+      acostar: verbGloss('acostar'),
+      acostarse: verbGloss('acostarse'),
+      convertir: verbGloss('convertir'),
+      convertirse: verbGloss('convertirse'),
+      desvanecer: verbGloss('desvanecer'),
+      desvanecerse: verbGloss('desvanecerse'),
+      adjectiveCollision: verbGloss('bajar'),
+      despertarFa: offlineTranslateWordDetailed('despertar', 'fa'),
+      despertarseFa: offlineTranslateWordDetailed('despertarse', 'fa'),
+      sentarFa: offlineTranslateWordDetailed('sentar', 'fa'),
+      sentarseFa: offlineTranslateWordDetailed('sentarse', 'fa')
+    },
+    words: {
+      accentedEl: offlineTranslateWordDetailed('él', 'en'),
+      articleEl: offlineTranslateWordDetailed('el', 'en'),
+      accentedElFa: offlineTranslateWordDetailed('él', 'fa'),
+      articleElFa: offlineTranslateWordDetailed('el', 'fa'),
+      túFa: offlineTranslateWordDetailed('tú', 'fa'),
+      tuFa: offlineTranslateWordDetailed('tu', 'fa'),
+      sé: offlineTranslateWordDetailed('sé', 'en'),
+      se: offlineTranslateWordDetailed('se', 'en'),
+      sí: offlineTranslateWordDetailed('sí', 'en'),
+      si: offlineTranslateWordDetailed('si', 'en'),
+      tú: offlineTranslateWordDetailed('tú', 'en'),
+      tu: offlineTranslateWordDetailed('tu', 'en'),
+      cómo: offlineTranslateWordDetailed('cómo', 'en'),
+      como: offlineTranslateWordDetailed('como', 'en'),
+      qué: offlineTranslateWordDetailed('qué', 'en'),
+      que: offlineTranslateWordDetailed('que', 'en'),
+      senté: offlineTranslateWordDetailed('senté', 'en'),
+      sentéFa: offlineTranslateWordDetailed('senté', 'fa'),
+      bajo: offlineTranslateWordDetailed('bajo', 'en'),
+      fuera: offlineTranslateWordDetailed('fuera', 'en'),
+      afuera: offlineTranslateWordDetailed('afuera', 'en'),
+      corto: offlineTranslateWordDetailed('corto', 'en'),
+      dado: offlineTranslateWordDetailed('dado', 'en'),
+      ultima: offlineTranslateWordDetailed('último', 'en'),
+      ultimo: offlineTranslateWordDetailed('ultimo', 'en'),
+      mi: offlineTranslateWordDetailed('mi', 'en'),
+      miFa: offlineTranslateWordDetailed('mi', 'fa'),
+      miAccentFa: offlineTranslateWordDetailed('mí', 'fa'),
+      bebe: offlineTranslateWordDetailed('bebe', 'en'),
+      bebeAccentFa: offlineTranslateWordDetailed('bebé', 'fa'),
+      bañarse: offlineTranslateWordDetailed('bañarse', 'en'),
+      banarse: offlineTranslateWordDetailed('banarse', 'en'),
+      ve: offlineTranslateWordDetailed('ve', 'en'),
+      veFa: offlineTranslateWordDetailed('ve', 'fa'),
+      ven: offlineTranslateWordDetailed('ven', 'en'),
+      venFa: offlineTranslateWordDetailed('ven', 'fa'),
+      bajoFa: offlineTranslateWordDetailed('bajo', 'fa'),
+      fueraFa: offlineTranslateWordDetailed('fuera', 'fa'),
+      dadoFa: offlineTranslateWordDetailed('dado', 'fa'),
+      cortoFa: offlineTranslateWordDetailed('corto', 'fa'),
+      contéFa: offlineTranslateWordDetailed('conté', 'fa'),
+      trabajoFa: offlineTranslateWordDetailed('trabajo', 'fa'),
+      tiempoFa: offlineTranslateWordDetailed('tiempo', 'fa'),
+      cariñoFa: offlineTranslateWordDetailed('cariño', 'fa'),
+      porFa: offlineTranslateWordDetailed('por', 'fa'),
+      juntoFa: offlineTranslateWordDetailed('junto', 'fa'),
+      haberse: offlineTranslateWordDetailed('haberse', 'en')
+    },
+    phrases: {
+      ambiguous: offlineTranslateText('se le hizo', 'en'),
+      context: offlineTranslateText('se le hizo tarde', 'en'),
+      satDownFa: offlineTranslateText('me senté', 'fa'),
+      ambiguousSide: offlineTranslateText('Me senté a su lado.', 'en'),
+      partialGuess: offlineTranslateText('La casa grande es azul.', 'en'),
+      knownSentences: offlineTranslateText('Cuando llegué a la casa de mi abuela, la puerta estaba entreabierta. Entré despacio y dejé la mochila junto al perchero.', 'en'),
+      fullPassageEn: offlineTranslateText(sampleText, 'en'),
+      fullPassageFa: offlineTranslateText(sampleText, 'fa')
+    }
+  }));
+
+  assert.equal(actual.verbs.despertar, 'to wake (someone) up');
+  assert.equal(actual.verbs.despertarse, 'to wake up');
+  assert.equal(actual.verbs.sentar, 'to seat (someone)');
+  assert.equal(actual.verbs.sentarse, 'to sit down');
+  assert.equal(actual.verbs.levantar, 'to lift; to raise');
+  assert.equal(actual.verbs.levantarse, 'to get up; to stand up');
+  assert.equal(actual.verbs.acostar, 'to lay (someone) down; to put (someone) to bed');
+  assert.equal(actual.verbs.acostarse, 'to lie down; to go to bed');
+  assert.equal(actual.verbs.convertir, 'to convert; to turn (something into something else)');
+  assert.equal(actual.verbs.convertirse, 'to become; to turn into');
+  assert.equal(actual.verbs.desvanecer, 'to make disappear; to dissipate');
+  assert.equal(actual.verbs.desvanecerse, 'to fade away; to vanish');
+  assert.equal(actual.verbs.adjectiveCollision, 'to go down; to lower', 'use the verb gloss, not the adjective gloss for bajo');
+  assert.equal(actual.verbs.despertarFa, 'بیدار کردن');
+  assert.equal(actual.verbs.despertarseFa, 'از خواب بیدار شدن');
+  assert.equal(actual.verbs.sentarFa, 'نشاندن');
+  assert.equal(actual.verbs.sentarseFa, 'نشستن');
+  assert.equal(actual.words.accentedEl, 'he');
+  assert.equal(actual.words.articleEl, 'the (masculine singular article)');
+  assert.equal(actual.words.accentedElFa, 'او (مذکر)');
+  assert.equal(actual.words.articleElFa, '', 'do not guess Farsi articles without grammatical context');
+  assert.equal(actual.words.túFa, 'تو');
+  assert.equal(actual.words.tuFa, 'مالِ تو (پیش از اسم)');
+  assert.match(actual.words.sé, /I know/);
+  assert.doesNotMatch(actual.words.se, /I know/);
+  assert.equal(actual.words.sí, 'yes / oneself (after a preposition)');
+  assert.equal(actual.words.si, 'if');
+  assert.equal(actual.words.tú, 'you (informal)');
+  assert.equal(actual.words.tu, 'your');
+  assert.equal(actual.words.cómo, 'how');
+  assert.equal(actual.words.como, 'I eat / as / like');
+  assert.equal(actual.words.qué, 'what');
+  assert.equal(actual.words.que, 'that / which / what');
+  assert.equal(actual.words.senté, 'I seated someone/something', 'senté is transitive; me senté is “I sat down”');
+  assert.equal(actual.words.sentéFa, 'نشاندم (کسی را/چیزی را)', 'the one-word Farsi gloss is also transitive');
+  assert.equal(actual.words.bajo, 'I go down / I lower; under / low / short');
+  assert.equal(actual.words.fuera, 'outside / were or went (imperfect subjunctive of ser/ir)');
+  assert.equal(actual.words.afuera, 'outside', 'afuera is not a subjunctive verb form');
+  assert.equal(actual.words.corto, 'short / I cut (cortar)');
+  assert.equal(actual.words.dado, 'given (participle) / die (noun)');
+  assert.equal(actual.words.ultima, 'last');
+  assert.equal(actual.words.ultimo, '', 'do not treat unaccented ultimo as último');
+  assert.equal(actual.words.mi, 'my');
+  assert.equal(actual.words.miFa, 'مالِ من (پیش از اسم)');
+  assert.equal(actual.words.miAccentFa, 'من (پس از حرف اضافه)');
+  assert.equal(actual.words.bebe, 'drinks');
+  assert.equal(actual.words.bebeAccentFa, 'نوزاد');
+  assert.equal(actual.words.bañarse, 'to bathe; to take a bath');
+  assert.equal(actual.words.banarse, '', 'ñ is not interchangeable with n in an exact offline lookup');
+  assert.match(actual.words.ve, /go! \(tú command of ir\)/);
+  assert.match(actual.words.ven, /come! \(tú command of venir\)/);
+  assert.equal(actual.words.veFa, 'می‌بیند / ببین! / برو!');
+  assert.equal(actual.words.venFa, 'می‌بینند / ببینید! / بیا!');
+  assert.equal(actual.words.bajoFa, 'پایین می‌روم / پایین می‌آورم؛ زیر / کوتاه');
+  assert.equal(actual.words.fueraFa, 'بیرون / باشم یا باشد؛ بروم یا برود (وجه التزامی)');
+  assert.equal(actual.words.dadoFa, 'داده‌شده / تاس');
+  assert.equal(actual.words.cortoFa, 'کوتاه / می‌بُرم');
+  assert.equal(actual.words.contéFa, 'شمردم / تعریف کردم');
+  assert.equal(actual.words.trabajoFa, 'کار / کار می‌کنم');
+  assert.equal(actual.words.tiempoFa, 'زمان / هوا');
+  assert.equal(actual.words.cariñoFa, 'عزیزم / محبت');
+  assert.equal(actual.words.porFa, 'برای / از طریق / به خاطر');
+  assert.equal(actual.words.juntoFa, 'کنار / با هم');
+  assert.equal(actual.words.haberse, '', 'haberse needs its surrounding construction');
+  assert.equal(actual.phrases.ambiguous, '', 'an incomplete se le hizo phrase is not guessed');
+  assert.equal(actual.phrases.context, 'he/she ran late; it got late for him/her');
+  assert.equal(actual.phrases.satDownFa, 'نشستم');
+  assert.equal(actual.phrases.ambiguousSide, 'I sat down beside them', 'su does not specify gender in isolation');
+  assert.equal(actual.phrases.partialGuess, '', 'unreviewed sentences are not assembled from isolated word glosses');
+  assert.equal(actual.phrases.knownSentences, 'When I arrived at my grandmother’s house, the door was ajar. I went in slowly and left my backpack by the coat rack.');
+  assert.match(actual.phrases.fullPassageEn, /^When I arrived at my grandmother’s house,/);
+  assert.match(actual.phrases.fullPassageEn, /I sat beside her and told her everything/);
+  assert.match(actual.phrases.fullPassageFa, /^وقتی به خانهٔ مادربزرگم رسیدم،/);
+  assert.match(actual.phrases.fullPassageFa, /کنارش نشستم و همهٔ اتفاقاتی را/);
+  await session.close();
+});
+
+test('reviewed offline matches are not silently replaced by machine translations', async () => {
+  const session = await newPage();
+  const { page } = session;
+  let onlineRequests = 0;
+  await page.route('https://api.mymemory.translated.net/**', async route => {
+    onlineRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ responseStatus: 200, responseData: { translatedText: 'I was seated beside him.' } })
+    });
+  });
+
+  const result = await page.evaluate(() => translateChunk('me senté', 'en'));
+  await page.waitForTimeout(50);
+  const cached = await page.evaluate(() => JSON.parse(localStorage.getItem('lumbre-live-translation-cache-v4') || '{}')['en::me senté']);
+  assert.deepEqual(result, { text: 'I sat down', source: 'offline' });
+  assert.equal(onlineRequests, 0, 'a reviewed phrase should not trigger a background online overwrite');
+  assert.deepEqual(cached && { text: cached.text, source: cached.source }, { text: 'I sat down', source: 'offline' });
   await session.close();
 });
 
@@ -446,6 +652,60 @@ async function verbRows(page) {
   return page.locator('#verbCard tbody tr').evaluateAll(rows => rows.map(row => [...row.children].map(cell => cell.textContent.trim())));
 }
 
+test('every built-in verb flashcard has an English gloss and displays it on the answer', async () => {
+  const state = {
+    passages: [{ id: 'p1', title: 'Verb gloss coverage', text: 'Ella abraza a su abuela.', highlights: [] }],
+    active: 'p1', settings: { liveTranslationEnabled: false },
+    verbs: [{ id: 'v1', lemma: 'abrazar', regular: true, sources: [], manual: true, cards: { conjugate: 0, identify: 0 }, learned: false }],
+    verbQueue: [], verbRepeatQueue: [], verbRound: 1, customVerbs: []
+  };
+  const session = await newPage({}, state);
+  const { page } = session;
+  const coverage = await page.evaluate(() => ({
+    count: window.spanishVerbBank.all().length,
+    missing: window.spanishVerbBank.all().filter(entry => !verbGloss(entry.infinitive)).map(entry => entry.infinitive),
+    reflexiveMeanings: ['aburrirse', 'acordarse', 'arrepentirse', 'divertirse', 'enfermarse', 'enojarse', 'quejarse'].map(verbGloss)
+  }));
+  assert.equal(coverage.count, 432);
+  assert.deepEqual(coverage.missing, []);
+  assert.deepEqual(coverage.reflexiveMeanings, [
+    'to get bored', 'to remember', 'to repent; to regret', 'to have fun',
+    'to get sick', 'to get angry', 'to complain'
+  ]);
+
+  await openVerbs(page);
+  assert.equal(await page.locator('#verbCard .verb-prompt').textContent(), 'to hug; to embrace');
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.match(await page.locator('#verbCard .verb-answer').textContent(), /to hug; to embrace/);
+  await session.close();
+});
+
+test('a custom verb without a gloss is not presented as an English translation', async () => {
+  const state = {
+    passages: [{ id: 'p1', title: 'Custom verb', text: 'Teletrabajo desde casa.', highlights: [] }],
+    active: 'p1', settings: { liveTranslationEnabled: false }, customVerbs: ['teletrabajar'],
+    verbs: [{ id: 'v1', lemma: 'teletrabajar', regular: true, sources: [], manual: true, cards: { conjugate: 0, identify: 0 }, learned: false }],
+    verbQueue: [], verbRepeatQueue: [], verbRound: 1
+  };
+  const session = await newPage({}, state);
+  const { page } = session;
+  await openVerbs(page);
+  await page.locator('[data-verb-action="toggle"]').click();
+  assert.equal(await page.locator('#verbCard .verb-answer b').textContent(), 'English gloss not available for this custom verb.');
+  assert.match(await page.locator('#verbCard .verb-answer>span').textContent(), /Spanish infinitive: teletrabajar/);
+
+  await page.locator('#addVerbInput').fill('teletrabajar');
+  await page.locator('#addVerbGlossInput').fill('to telework');
+  await page.locator('#addVerbForm button[type="submit"]').click();
+  assert.equal(await page.locator('#verbCard .verb-prompt').textContent(), 'to telework');
+  assert.match(await page.locator('#verbCard .verb-answer b').textContent(), /to telework/);
+  await page.reload();
+  await openVerbs(page);
+  assert.equal(await page.locator('#verbCard .verb-prompt').textContent(), 'to telework');
+  assert.equal((await getState(page)).customVerbGlosses.teletrabajar, 'to telework');
+  await session.close();
+});
+
 test('saving a regular verb adds a first-person verb card', async () => {
   const session = await newPage();
   const { page } = session;
@@ -531,23 +791,28 @@ test('readers can add their own verbs and they survive a reload', async () => {
   const { page } = session;
   await openVerbs(page);
   await page.locator('#addVerbInput').fill('teletrabajar, volver');
+  await page.locator('#addVerbGlossInput').fill('to telework; to return');
   await page.locator('#addVerbForm button[type="submit"]').click();
   assert.match(await page.locator('#toast').textContent(), /2 verbs in your practice: teletrabajar, volver/);
   assert.equal(await page.locator('#verbNavCount').textContent(), '2');
   await page.locator('.verb-memory-button', { hasText: 'teletrabajar' }).click();
+  assert.equal(await page.locator('#verbCard .verb-prompt').textContent(), 'to telework');
   await page.locator('[data-verb-action="toggle"]').click();
   assert.deepEqual(await verbRows(page), [
     ['To-be form', 'teletrabajar'],
     ['yo', 'teletrabajo', 'teletrabajé']
   ]);
   await page.locator('.verb-memory-button', { hasText: 'volver' }).click();
+  assert.equal(await page.locator('#verbCard .verb-prompt').textContent(), 'to return; to come back');
   await page.locator('[data-verb-action="toggle"]').click();
   assert.match(await page.locator('#verbCard .card-label').first().textContent(), /IRREGULAR VERB/);
   assert.deepEqual((await verbRows(page))[1], ['yo', 'vuelvo', 'volví']);
   await page.reload();
   await openVerbs(page);
   assert.equal(await page.locator('.verb-memory-item').count(), 2);
-  assert.deepEqual((await getState(page)).customVerbs.sort(), ['teletrabajar', 'volver']);
+  const persisted = await getState(page);
+  assert.deepEqual(persisted.customVerbs.sort(), ['teletrabajar', 'volver']);
+  assert.deepEqual(persisted.customVerbGlosses, { teletrabajar: 'to telework' });
   await session.close();
 });
 
