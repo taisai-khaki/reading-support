@@ -406,6 +406,12 @@ function verbBank() {
 function ensureVerbState() {
   if (!Array.isArray(state.verbs)) state.verbs = [];
   if (!Array.isArray(state.customVerbs)) state.customVerbs = [];
+  if (!state.customVerbGlosses || typeof state.customVerbGlosses !== 'object' || Array.isArray(state.customVerbGlosses)) state.customVerbGlosses = {};
+  Object.keys(state.customVerbGlosses).forEach(lemma => {
+    const gloss = String(state.customVerbGlosses[lemma] || '').trim();
+    if (gloss) state.customVerbGlosses[lemma] = gloss;
+    else delete state.customVerbGlosses[lemma];
+  });
   if (!Array.isArray(state.verbQueue)) state.verbQueue = [];
   if (!Array.isArray(state.verbRepeatQueue)) state.verbRepeatQueue = [];
   state.verbRound = Number(state.verbRound) || 1;
@@ -524,8 +530,19 @@ function prioritizeNextVerb(previousVerbId) {
 }
 
 function verbGloss(lemma) {
-  const base = String(lemma || '').replace(/se$/, '');
-  return String(verbInfinitiveEn[lemma] || verbInfinitiveEn[base] || offlineTranslateWord(base, 'en') || '').trim();
+  const key = String(lemma || '').trim();
+  const base = key.replace(/se$/, '');
+  // Vetted built-in meanings always win. Reader-supplied glosses are reserved
+  // for genuinely custom verbs, not used to replace the reviewed verb bank.
+  const reviewedGloss = verbInfinitiveEn[key] || verbInfinitiveEn[base];
+  if (reviewedGloss) return String(reviewedGloss).trim();
+  const readerGloss = String(state.customVerbGlosses?.[key] || '').trim();
+  const baseReaderGloss = String(state.customVerbGlosses?.[base] || '').trim();
+  if (readerGloss) return readerGloss;
+  if (baseReaderGloss) return baseReaderGloss;
+  // Never borrow a noun/adjective gloss for a verb that happens to have the
+  // same spelling.
+  return '';
 }
 
 // The form shown on a “which verb is this?” card. Stable inside a round, but
@@ -618,7 +635,8 @@ function renderVerbs() {
     ? 'Name the infinitive, then recall the other forms.'
     : (entry.regular ? 'To-be form, then present and past for yo.' : 'Present and past for every person.');
   const count = verbCorrectCount(verb, direction);
-  const answer = `<div class="answer-copy verb-answer"><b>${escapeHtml(entry.infinitive)}${gloss ? ` · ${escapeHtml(gloss)}` : ''}</b><span>${escapeHtml(kind.toLowerCase())}</span></div>${verbTableMarkup(entry)}`;
+  const englishMeaning = gloss || 'English gloss not available for this custom verb.';
+  const answer = `<div class="answer-copy verb-answer"><b lang="en">${escapeHtml(englishMeaning)}</b><span>Spanish infinitive: <span lang="es">${escapeHtml(entry.infinitive)}</span> · ${escapeHtml(kind.toLowerCase())}</span></div>${verbTableMarkup(entry)}`;
   const revealLabel = revealed ? 'Hide answer' : (direction === 'identify' ? 'Show the verb' : 'Show the forms');
 
   card.className = 'flashcard verb-flashcard';
@@ -628,433 +646,671 @@ function renderVerbs() {
   save();
 }
 
-/* --- Enhanced dictionaries and translation engine v2 --- */
+/* --- Curated Spanish-to-English/Farsi dictionaries and translation engine --- */
 const miniDictionary = {
-  cuando: 'when', llegué: 'I arrived', llegue: 'I arrive (subjunctive)', casa: 'house', abuela: 'grandmother', puerta: 'door', entreabierta: 'ajar',
-  entré: 'I entered', entre: 'between / I enter', despacio: 'slowly', dejé: 'I left', deje: 'I leave (subjunctive)', mochila: 'backpack', junto: 'next to / together', perchero: 'coat rack',
-  desde: 'from / since', cocina: 'kitchen', llegaba: 'came / was arriving', olor: 'smell', delicioso: 'delicious', canela: 'cinnamon',
-  pan: 'bread', recién: 'freshly / just', recien: 'freshly', horneado: 'baked', preguntó: 'asked', pregunto: 'I ask', sin: 'without', levantar: 'to lift / to raise',
-  vista: 'sight / view', masa: 'dough', senté: 'I sat', sente: 'I sit', lado: 'side', conté: 'I told', conte: 'I tell', todo: 'everything / all', pasado: 'past / happened',
-  durante: 'during', viaje: 'trip / travel', afuera: 'outside', tarde: 'afternoon / late', desvanecía: 'faded / was fading', lentamente: 'slowly',
-  dentro: 'inside', tiempo: 'time / weather', parecía: 'seemed', parece: 'seems', haberse: 'to have', detenido: 'stopped', cariño: 'darling / affection',
+  cuando: 'when', llegué: 'I arrived', llegue: 'arrive (present subjunctive)', casa: 'house', abuela: 'grandmother', puerta: 'door', entreabierta: 'ajar',
+  entré: 'I entered', despacio: 'slowly', dejé: 'I left', deje: 'leave / let (present subjunctive)', mochila: 'backpack', junto: 'next to / together', perchero: 'coat rack',
+  cocina: 'kitchen', llegaba: 'was arriving / used to arrive', olor: 'smell', delicioso: 'delicious', canela: 'cinnamon',
+  pan: 'bread', recién: 'freshly / just', recien: 'freshly', horneado: 'baked', preguntó: 'asked', pregunto: 'I ask', levantar: 'to lift / to raise',
+  vista: 'sight / view', masa: 'dough', senté: 'I seated someone/something', sente: 'seat (present subjunctive)', lado: 'side', conté: 'I told / counted', conte: 'count / tell (present subjunctive)', pasado: 'past / passed',
+  durante: 'during', viaje: 'trip / travel', afuera: 'outside', tarde: 'afternoon / late', desvanecía: 'was fading / used to fade', lentamente: 'slowly',
+  tiempo: 'time / weather', parecía: 'seemed', haberse: '', detenido: 'stopped', cariño: 'darling / affection',
   // Pronouns and common words - expanded
-  yo: 'I', tú: 'you (informal)', tu: 'your', usted: 'you (formal)', el: 'he / the (masc)', ella: 'she', ello: 'it', nosotros: 'we', nosotras: 'we (fem)', vosotros: 'you (plural informal)', ellos: 'they (masc)', ellas: 'they (fem)', ustedes: 'you (plural formal)',
+  yo: 'I', tú: 'you (informal)', tu: 'your', usted: 'you (formal)', el: 'the (masculine singular article)', él: 'he', ella: 'she', ello: 'it', nosotros: 'we', nosotras: 'we (fem)', vosotros: 'you (plural informal)', ellos: 'they (masc)', ellas: 'they (fem)', ustedes: 'you (plural formal)',
   me: 'me / to me', te: 'you / to you', se: 'himself/herself/itself/themselves / reflexive-impersonal marker', nos: 'us / to us', os: 'you / to you (plural)', le: 'to him/her/you (indirect)', les: 'to them', lo: 'him / it (masc direct)', la: 'her / it (fem) / the (fem)', los: 'them (masc) / the (masc plural)', las: 'them (fem) / the (fem plural)',
-  mi: 'my', mis: 'my (plural)', su: 'his/her/their/your', sus: 'his/her/their (plural)', nuestro: 'our', nuestra: 'our (fem)', vuestro: 'your (plural)', nuestro: 'our',
+  mi: 'my', mí: 'me (after a preposition)', mis: 'my (plural)', su: 'his/her/their/your', sus: 'his/her/their (plural)', nuestro: 'our', nuestra: 'our (fem)', vuestro: 'your (plural)',
   este: 'this (masc)', esta: 'this (fem)', estos: 'these (masc)', estas: 'these (fem)', ese: 'that (masc)', esa: 'that (fem)', esos: 'those (masc)', esas: 'those (fem)', aquel: 'that (far masc)', aquella: 'that (far fem)', esto: 'this (neuter)', eso: 'that (neuter)', aquello: 'that (far neuter)',
   // Articles
   un: 'a / an (masc)', una: 'a / an (fem)', unos: 'some (masc)', unas: 'some (fem)',
   // Prepositions
-  a: 'to / at', ante: 'before / in front of', bajo: 'under', con: 'with', contra: 'against', de: 'of / from', desde: 'from / since', en: 'in / on', entre: 'between / among', hacia: 'toward', hasta: 'until / up to', para: 'for / in order to', por: 'for / by / through / because of', según: 'according to', segun: 'according to', sin: 'without', sobre: 'about / on / over', tras: 'after / behind', al: 'to the (a+el)', del: 'of the (de+el)',
+  a: 'to / at', ante: 'before / in front of', bajo: 'I go down / I lower; under / low / short', con: 'with', contra: 'against', de: 'of / from', desde: 'from / since', en: 'in / on', entre: 'between / among / enter (present subjunctive)', hacia: 'toward', hasta: 'until / up to', para: 'for / in order to', por: 'for / by / through / because of', según: 'according to', segun: 'according to', sin: 'without', sobre: 'about / on / over', tras: 'after / behind', al: 'to the (a+el)', del: 'of the (de+el)',
   // Conjunctions
   y: 'and', e: 'and (before i-)', o: 'or', u: 'or (before o-)', pero: 'but', sino: 'but rather', porque: 'because', que: 'that / which / what', aunque: 'although', si: 'if', ni: 'nor / neither', pues: 'then / well',
   // Adverbs and common
-  muy: 'very', mucho: 'much / a lot', muchos: 'many (masc)', muchas: 'many (fem)', poco: 'little / few', bastante: 'quite / enough', más: 'more', mas: 'but', menos: 'less', bien: 'well', mal: 'badly', mejor: 'better / best', peor: 'worse', aquí: 'here', aqui: 'here', allí: 'there', alli: 'there', ahí: 'there (near you)', ahi: 'there', ahora: 'now', luego: 'then / later', después: 'after / later', despues: 'after', antes: 'before', siempre: 'always', nunca: 'never', jamás: 'never / ever', jamas: 'never', también: 'also / too', tambien: 'also', tampoco: 'neither', todavía: 'still / yet', todavia: 'still', aún: 'still / yet / even', aun: 'even', ya: 'already', solo: 'only / alone', sólo: 'only', así: 'like this / thus', asi: 'thus', entonces: 'then / so', hoy: 'today', ayer: 'yesterday', mañana: 'tomorrow / morning', temprano: 'early', pronto: 'soon', cerca: 'near', lejos: 'far', dentro: 'inside', fuera: 'outside', arriba: 'up / above', abajo: 'down / below', delante: 'in front', detrás: 'behind', detras: 'behind', todo: 'everything / all', todos: 'everyone / all', todas: 'all (fem)', nada: 'nothing', algo: 'something', alguien: 'someone', nadie: 'no one', cada: 'each / every', otro: 'other / another', otra: 'other (fem)', mismo: 'same / self', misma: 'same (fem)', sí: 'yes / itself', no: 'no / not', cómo: 'how', como: 'like / as / how', cuándo: 'when', donde: 'where', dónde: 'where', porqué: 'why', qué: 'what',
+  muy: 'very', mucho: 'much / a lot', muchos: 'many (masc)', muchas: 'many (fem)', poco: 'little / few', bastante: 'quite / enough', más: 'more', mas: 'but', menos: 'less', bien: 'well', mal: 'badly', mejor: 'better / best', peor: 'worse / worst', aquí: 'here', aqui: 'here', allí: 'there', alli: 'there', ahí: 'there (near you)', ahi: 'there', ahora: 'now', luego: 'then / later', después: 'after / later', despues: 'after', antes: 'before', siempre: 'always', nunca: 'never', jamás: 'never / ever', jamas: 'never', también: 'also / too', tambien: 'also', tampoco: 'neither', todavía: 'still / yet', todavia: 'still', aún: 'still / yet / even', aun: 'even', ya: 'already', solo: 'only / alone', sólo: 'only', así: 'like this / thus', asi: 'thus', entonces: 'then / so', hoy: 'today', ayer: 'yesterday', mañana: 'tomorrow / morning', temprano: 'early', pronto: 'soon', cerca: 'near', lejos: 'far', dentro: 'inside', fuera: 'outside / were or went (imperfect subjunctive of ser/ir)', arriba: 'up / above', abajo: 'down / below', delante: 'in front', detrás: 'behind', detras: 'behind', todo: 'everything / all', todos: 'everyone / all', todas: 'all (fem)', nada: 'nothing', algo: 'something', alguien: 'someone', nadie: 'no one', cada: 'each / every', otro: 'other / another', otra: 'other (fem)', mismo: 'same / self', misma: 'same (fem)', sí: 'yes / oneself (after a preposition)', no: 'no / not', cómo: 'how', cuándo: 'when', donde: 'where', dónde: 'where', porqué: 'reason / why (noun)', qué: 'what',
   // Common nouns, adjectives, verbs base forms without to
-  agua: 'water', aire: 'air', amigo: 'friend', amor: 'love', año: 'year', árbol: 'tree', arbol: 'tree', vida: 'life', gente: 'people', hombre: 'man', mujer: 'woman', niño: 'child', niña: 'child (fem)', día: 'day', noche: 'night', semana: 'week', mes: 'month', momento: 'moment', mundo: 'world', trabajo: 'work / job', mano: 'hand', ojo: 'eye', cabeza: 'head', corazón: 'heart', corazon: 'heart', lugar: 'place', cosa: 'thing', parte: 'part', palabra: 'word', historia: 'story / history', forma: 'form / shape', manera: 'way / manner', caso: 'case', punto: 'point', país: 'country', pais: 'country', ciudad: 'city', calle: 'street', familia: 'family', padre: 'father', madre: 'mother', hijo: 'son / child', hija: 'daughter', hermano: 'brother', hermana: 'sister',
-  grande: 'big / large', pequeño: 'small', pequeño: 'small', pequeno: 'small', pequeño: 'small', bueno: 'good', malo: 'bad', nuevo: 'new', viejo: 'old', joven: 'young', mismo: 'same', otro: 'other', mucho: 'much', poco: 'little', largo: 'long', corto: 'short', alto: 'tall / high', bajo: 'short / low', feliz: 'happy', triste: 'sad', fácil: 'easy', facil: 'easy', difícil: 'difficult', dificil: 'difficult', importante: 'important', diferente: 'different', cierto: 'certain / true', posible: 'possible', mejor: 'better', peor: 'worse', primero: 'first', último: 'last', ultimo: 'last',
-  // Common verb conjugated forms for quick lookup (will be overridden by verb analysis for context)
-  soy: 'I am (ser)', eres: 'you are (ser)', es: 'is / he/she/it is (ser)', somos: 'we are (ser)', son: 'they are / you are (plural) (ser)', estoy: 'I am (estar)', estás: 'you are (estar)', estás: 'you are', está: 'is (estar) / he/she/it is', estamos: 'we are (estar)', están: 'they are (estar)', tengo: 'I have', tienes: 'you have', tiene: 'has / he/she/it has', tenemos: 'we have', tienen: 'they have', hago: 'I do/make', haces: 'you do/make', hace: 'does/makes / he/she/it does', hacemos: 'we do/make', hacen: 'they do/make', hice: 'I did/made (preterite)', hiciste: 'you did/made', hizo: 'he/she/it did/made (preterite of hacer: to do/make)', hicimos: 'we did/made', hicieron: 'they did/made', hecho: 'done/made (past participle of hacer)', haciendo: 'doing/making (gerund of hacer)',
+  agua: 'water', aire: 'air', bebé: 'baby', amigo: 'friend', amor: 'love', año: 'year', árbol: 'tree', arbol: 'tree', vida: 'life', gente: 'people', hombre: 'man', mujer: 'woman', niño: 'child', niña: 'child (fem)', día: 'day', noche: 'night', semana: 'week', mes: 'month', momento: 'moment', mundo: 'world', mano: 'hand', ojo: 'eye', cabeza: 'head', corazón: 'heart', corazon: 'heart', lugar: 'place', cosa: 'thing', parte: 'part', palabra: 'word', historia: 'story / history', forma: 'form / shape', manera: 'way / manner', caso: 'case', punto: 'point', país: 'country', pais: 'country', ciudad: 'city', calle: 'street', familia: 'family', padre: 'father', madre: 'mother', hijo: 'son / child', hija: 'daughter', hermano: 'brother', hermana: 'sister',
+  grande: 'big / large', pequeño: 'small', pequeno: 'small', bueno: 'good', malo: 'bad', nuevo: 'new', viejo: 'old', joven: 'young', largo: 'long', corto: 'short / I cut (cortar)', alto: 'tall / high', feliz: 'happy', triste: 'sad', fácil: 'easy', facil: 'easy', difícil: 'difficult', dificil: 'difficult', importante: 'important', diferente: 'different', cierto: 'certain / true', posible: 'possible', primero: 'first', último: 'last', ultimo: '',
+  // Curated verb forms; ambiguous homographs list alternatives instead of guessing context.
+  soy: 'I am (ser)', eres: 'you are (ser)', es: 'is / he/she/it is (ser)', somos: 'we are (ser)', son: 'they are / you are (plural) (ser)', estoy: 'I am (estar)', estás: 'you are (estar)', está: 'is (estar) / he/she/it is', estamos: 'we are (estar)', están: 'they are (estar)', tengo: 'I have', tienes: 'you have', tiene: 'has / he/she/it has', tenemos: 'we have', tienen: 'they have', hago: 'I do/make', haces: 'you do/make', hace: 'does/makes / he/she/it does; ago in time expressions', hacemos: 'we do/make', hacen: 'they do/make', hice: 'I did/made (preterite)', hiciste: 'you did/made', hizo: 'he/she/it did/made (preterite of hacer: to do/make)', hicimos: 'we did/made', hicieron: 'they did/made', hecho: 'done/made (past participle of hacer)', haciendo: 'doing/making (gerund of hacer)',
   digo: 'I say', dices: 'you say', dice: 'says / he/she says', decimos: 'we say', dicen: 'they say', dije: 'I said', dijo: 'he/she said', dicho: 'said (participle)',
   voy: 'I go', vas: 'you go', va: 'goes / he/she goes', vamos: 'we go', van: 'they go', fui: 'I was/went', fuiste: 'you were/went', fue: 'was/went (he/she/it)', fuimos: 'we were/went', fueron: 'they were/went',
-  veo: 'I see', ves: 'you see', ve: 'sees / he/she sees', vemos: 'we see', ven: 'they see / you see', vi: 'I saw', vio: 'he/she saw', visto: 'seen',
-  doy: 'I give', das: 'you give', da: 'gives', damos: 'we give', dan: 'they give', di: 'I gave', dio: 'he/she gave', dado: 'given',
-  sé: 'I know', se: 'I know / reflexive marker (context)', sabes: 'you know', sabe: 'knows / he/she knows', sabemos: 'we know', saben: 'they know', supe: 'I knew (preterite)', supo: 'he/she knew',
+  veo: 'I see', ves: 'you see', ve: 'he/she sees / see! (tú command of ver) / go! (tú command of ir)', vemos: 'we see', ven: 'they see / see! (ustedes command of ver) / come! (tú command of venir)', vi: 'I saw', vio: 'he/she saw', visto: 'seen',
+  doy: 'I give', das: 'you give', da: 'gives', damos: 'we give', dan: 'they give', di: 'I gave / say! (tú command of decir)', dio: 'he/she gave', dado: 'given (participle) / die (noun)',
+  sé: 'I know / be! (tú command of ser)', sabes: 'you know', sabe: 'knows / he/she knows', sabemos: 'we know', saben: 'they know', supe: 'I knew (preterite)', supo: 'he/she knew',
   quiero: 'I want/love', quieres: 'you want', quiere: 'wants / he/she wants', queremos: 'we want', quieren: 'they want', quise: 'I wanted (preterite)', quiso: 'he/she wanted',
   puedo: 'I can', puedes: 'you can', puede: 'can / he/she can', podemos: 'we can', pueden: 'they can', pude: 'I could (preterite)', pudo: 'he/she could',
   pongo: 'I put', pones: 'you put', pone: 'puts', ponemos: 'we put', ponen: 'they put', puse: 'I put (preterite)', puso: 'he/she put', puesto: 'put (participle)',
   vengo: 'I come', vienes: 'you come', viene: 'comes', venimos: 'we come', vienen: 'they come', vine: 'I came', vino: 'he/she came / wine', venido: 'come (participle)',
-  digo: 'I say', salgo: 'I go out', sales: 'you go out', sale: 'goes out / leaves', salimos: 'we go out', salen: 'they go out', salí: 'I went out', salió: 'he/she went out',
+  salgo: 'I go out', sales: 'you go out', sale: 'goes out / leaves', salimos: 'we go out', salen: 'they go out', salí: 'I went out', salió: 'he/she went out',
   conozco: 'I know (person/place)', conoces: 'you know', conoce: 'knows', conocemos: 'we know', conocen: 'they know',
-  parezco: 'I seem', pareces: 'you seem', parece: 'seems', parecemos: 'we seem', parecen: 'they seem',
-  siento: 'I feel / I sit', sientes: 'you feel', siente: 'feels', sentimos: 'we feel', sienten: 'they feel',
+  siento: 'I feel / I seat someone', sientes: 'you feel / seat (subjunctive)', siente: 'he/she feels / seat (subjunctive)', sentimos: 'we feel', sienten: 'they feel / seat (subjunctive)',
   pienso: 'I think', piensas: 'you think', piensa: 'thinks', pensamos: 'we think', piensan: 'they think',
   vuelvo: 'I return', vuelves: 'you return', vuelve: 'returns', volvemos: 'we return', vuelven: 'they return',
   duermo: 'I sleep', duermes: 'you sleep', duerme: 'sleeps', dormimos: 'we sleep', duermen: 'they sleep',
   pido: 'I ask for', pides: 'you ask for', pide: 'asks for', pedimos: 'we ask for', piden: 'they ask for',
   leo: 'I read', lees: 'you read', lee: 'reads', leemos: 'we read', leen: 'they read', leí: 'I read (past)', leyó: 'he/she read',
   escribo: 'I write', escribes: 'you write', escribe: 'writes', escribimos: 'we write', escriben: 'they write', escribí: 'I wrote', escribió: 'he/she wrote', escrito: 'written',
-  como: 'I eat / like / as', comes: 'you eat', come: 'eats', comemos: 'we eat', comen: 'they eat', comí: 'I ate', comió: 'he/she ate',
+  como: 'I eat / as / like', comes: 'you eat', come: 'eats', comemos: 'we eat', comen: 'they eat', comí: 'I ate', comió: 'he/she ate',
   bebo: 'I drink', bebes: 'you drink', bebe: 'drinks', bebemos: 'we drink', beben: 'they drink', bebí: 'I drank', bebió: 'he/she drank',
-  vivo: 'I live', vives: 'you live', vive: 'lives', vivimos: 'we live', viven: 'they live', viví: 'I lived', vivió: 'he/she lived',
-  trabajo: 'I work / work (noun)', trabajas: 'you work', trabaja: 'works', trabajamos: 'we work', trabajan: 'they work',
+  vivo: 'alive / I live', vives: 'you live', vive: 'lives', vivimos: 'we live', viven: 'they live', viví: 'I lived', vivió: 'he/she lived',
+  trabajo: 'I work / work / job (noun)', trabajas: 'you work', trabaja: 'works', trabajamos: 'we work', trabajan: 'they work',
   hablo: 'I speak', hablas: 'you speak', habla: 'speaks', hablamos: 'we speak', hablan: 'they speak',
   // Extra common conjugated
   había: 'there was/were / had (imperfect of haber)', hay: 'there is/are', habrá: 'there will be', hubo: 'there was (preterite)', he: 'I have (aux)', has: 'you have (aux)', ha: 'has (aux)', hemos: 'we have (aux)', han: 'they have (aux)',
   era: 'was (imperfect of ser)', eras: 'you were (ser)', éramos: 'we were (ser)', eran: 'they were (ser)',
   estaba: 'was (imperfect of estar)', estabas: 'you were (estar)', estábamos: 'we were (estar)', estaban: 'they were (estar)',
-  tenía: 'had (imperfect of tener)', tenías: 'you had', tenía: 'had', teníamos: 'we had', tenían: 'they had',
-  hacía: 'did/made (imperfect of hacer) / ago', hacías: 'you did', hacíamos: 'we did', hacían: 'they did',
-  decía: 'said (imperfect)', decías: 'you said', decíamos: 'we said', decían: 'they said',
-  iba: 'went/was going (imperfect of ir)', ibas: 'you were going', íbamos: 'we were going', iban: 'they were going',
-  veía: 'saw (imperfect of ver)', veías: 'you saw', veíamos: 'we saw', veían: 'they saw',
-  // For se le hizo specifically
-  se: 'himself/herself/itself/themselves / reflexive-impersonal marker / I know',
+  tenía: 'had / used to have (imperfect)', tenías: 'you had / used to have', teníamos: 'we had / used to have', tenían: 'they had / used to have',
+  hacía: 'was doing/making / used to do/make; ago in time expressions', hacías: 'you were doing/making / used to do/make', hacíamos: 'we were doing/making / used to do/make', hacían: 'they were doing/making / used to do/make',
+  decía: 'was saying/telling / used to say/tell', decías: 'you were saying/telling / used to say/tell', decíamos: 'we were saying/telling / used to say/tell', decían: 'they were saying/telling / used to say/tell',
+  iba: 'was going / used to go', ibas: 'you were going', íbamos: 'we were going', iban: 'they were going',
+  veía: 'was seeing / used to see', veías: 'you were seeing / used to see', veíamos: 'we were seeing / used to see', veían: 'they were seeing / used to see',
 };
 
 const farsiDictionary = {
-  cuando: 'وقتی', llegué: 'رسیدم', llegue: 'برسم', casa: 'خانه', abuela: 'مادربزرگ', puerta: 'در', entreabierta: 'نیمه‌باز',
-  entré: 'وارد شدم', entre: 'بین', despacio: 'آهسته', dejé: 'گذاشتم', deje: 'بگذارم', mochila: 'کوله‌پشتی', junto: 'کنار', perchero: 'جالباسی',
-  desde: 'از', cocina: 'آشپزخانه', llegaba: 'می‌آمد', olor: 'بو', delicioso: 'دل‌انگیز', canela: 'دارچین',
-  pan: 'نان', recién: 'تازه', recien: 'تازه', horneado: 'پخته‌شده', preguntó: 'پرسید', pregunto: 'می‌پرسم', sin: 'بدون', levantar: 'بلند کردن',
-  vista: 'نگاه', masa: 'خمیر', senté: 'نشستم', lado: 'کنار', conté: 'تعریف کردم', todo: 'همه‌چیز', pasado: 'اتفاق افتاده',
+  cuando: 'وقتی', llegué: 'رسیدم', llegue: 'برسم / برسد (وجه التزامی)', casa: 'خانه', abuela: 'مادربزرگ', puerta: 'در', entreabierta: 'نیمه‌باز',
+  entré: 'وارد شدم', despacio: 'آهسته', dejé: 'گذاشتم', deje: 'بگذارم / بگذارد (وجه التزامی)', mochila: 'کوله‌پشتی', junto: 'کنار / با هم', perchero: 'جالباسی',
+  cocina: 'آشپزخانه', llegaba: 'می‌آمد', olor: 'بو', delicioso: 'خوشمزه / دلپذیر', canela: 'دارچین',
+  pan: 'نان', recién: 'تازه', recien: 'تازه', horneado: 'پخته‌شده', preguntó: 'پرسید', pregunto: 'می‌پرسم', levantar: 'بلند کردن', bebé: 'نوزاد',
+  vista: 'نگاه', masa: 'خمیر', senté: 'نشاندم (کسی را/چیزی را)', sente: 'بنشاند (وجه التزامی)', lado: 'کنار', conté: 'شمردم / تعریف کردم', todo: 'همه‌چیز', pasado: 'گذشته / سپری‌شده', dado: 'داده‌شده / تاس', corto: 'کوتاه / می‌بُرم', bajo: 'پایین می‌روم / پایین می‌آورم؛ زیر / کوتاه', fuera: 'بیرون / باشم یا باشد؛ بروم یا برود (وجه التزامی)',
   durante: 'در طول', viaje: 'سفر', afuera: 'بیرون', tarde: 'عصر / دیر', desvanecía: 'کم‌کم محو می‌شد', lentamente: 'آهسته',
-  dentro: 'داخل', tiempo: 'زمان', parecía: 'به نظر می‌رسید', parece: 'به نظر می‌رسد', haberse: 'شده بودن', detenido: 'متوقف', cariño: 'عزیزم',
-  yo: 'من', tú: 'تو', tu: 'تو / مال تو', usted: 'شما (مودبانه)', él: 'او (مذکر)', ella: 'او (مونث)', nosotros: 'ما', ellos: 'آنها (مذکر)', ellas: 'آنها (مونث)',
-  me: 'مرا / به من', te: 'تو را / به تو', se: 'خودش / علامت مجهول', nos: 'ما را / به ما', os: 'شما را', le: 'به او', les: 'به آنها', lo: 'او را (مذکر)', la: 'او را (مونث)', los: 'آنها را (مذکر)', las: 'آنها را (مونث)',
-  mi: 'مال من', su: 'مال او / شما', nuestro: 'مال ما',
-  el: 'حرف تعریف مذکر', la: 'حرف تعریف مونث', un: 'یک', una: 'یک (مونث)',
-  a: 'به', de: 'از / مال', en: 'در', con: 'با', por: 'برای / به خاطر', para: 'برای', sin: 'بدون', sobre: 'درباره / روی', entre: 'بین', hasta: 'تا', desde: 'از',
+  dentro: 'داخل', tiempo: 'زمان / هوا', parecía: 'به نظر می‌رسید', haberse: '', detenido: 'متوقف', cariño: 'عزیزم / محبت',
+  yo: 'من', tú: 'تو', tu: 'مالِ تو (پیش از اسم)', usted: 'شما (مودبانه)', él: 'او (مذکر)', ella: 'او (مونث)', nosotros: 'ما', ellos: 'آنها (مذکر)', ellas: 'آنها (مونث)',
+  me: 'مرا / به من', te: 'تو را / به تو', se: 'خودش / علامت مجهول', nos: 'ما را / به ما', os: 'شما را', le: 'به او', les: 'به آنها', lo: 'او را (مذکر)', los: 'آنها را (مذکر)', las: 'آنها را (مونث)',
+  mi: 'مالِ من (پیش از اسم)', mí: 'من (پس از حرف اضافه)', su: 'مالِ او / آنها / شما (پیش از اسم)', nuestro: 'مال ما',
+  el: '', la: '', un: 'یک', una: 'یک (مونث)',
+  a: 'به', de: 'از / مال', en: 'در', con: 'با', por: 'برای / از طریق / به خاطر', para: 'برای', sin: 'بدون', sobre: 'درباره / روی', entre: 'بین / وارد شود (وجه التزامی)', hasta: 'تا', desde: 'از',
   y: 'و', o: 'یا', pero: 'اما', porque: 'چون', que: 'که', si: 'اگر', aunque: 'اگرچه',
-  muy: 'خیلی', mucho: 'خیلی', poco: 'کم', más: 'بیشتر', bien: 'خوب', mal: 'بد', aquí: 'اینجا', allí: 'آنجا', ahora: 'الان', siempre: 'همیشه', nunca: 'هرگز', también: 'همچنین', todavia: 'هنوز', ya: 'قبلاً', solo: 'فقط', así: 'اینطور', hoy: 'امروز', mañana: 'فردا',
+  muy: 'خیلی', mucho: 'خیلی', poco: 'کم', más: 'بیشتر', bien: 'خوب', mal: 'بد', aquí: 'اینجا', allí: 'آنجا', ahora: 'الان', siempre: 'همیشه', nunca: 'هرگز', también: 'همچنین', todavía: 'هنوز', todavia: 'هنوز', ya: 'قبلاً', solo: 'فقط / تنها', así: 'اینطور', hoy: 'امروز', mañana: 'فردا / صبح',
   grande: 'بزرگ', pequeño: 'کوچک', bueno: 'خوب', malo: 'بد', nuevo: 'جدید', viejo: 'قدیمی', feliz: 'خوشحال', triste: 'ناراحت', fácil: 'آسان', difícil: 'سخت', importante: 'مهم',
-  soy: 'هستم (بودن)', eres: 'هستی', es: 'است', somos: 'هستیم', son: 'هستند', estoy: 'هستم (موقت)', está: 'است (موقت)', tengo: 'دارم', tiene: 'دارد', hago: 'انجام می‌دهم', hace: 'انجام می‌دهد', hice: 'انجام دادم', hizo: 'انجام داد (او)', hecho: 'انجام شده', digo: 'می‌گویم', dice: 'می‌گوید', dije: 'گفتم', dijo: 'گفت', voy: 'می‌روم', va: 'می‌رود', fui: 'رفتم / بودم', fue: 'رفت / بود', veo: 'می‌بینم', ve: 'می‌بیند', vi: 'دیدم', vio: 'دید', doy: 'می‌دهم', da: 'می‌دهد', di: 'دادم', dio: 'داد', sé: 'می‌دانم', sabe: 'می‌داند', quiero: 'می‌خواهم', quiere: 'می‌خواهد', puedo: 'می‌توانم', puede: 'می‌تواند', pongo: 'می‌گذارم', pone: 'می‌گذارد', vengo: 'می‌آیم', viene: 'می‌آید', salgo: 'خارج می‌شوم', sale: 'خارج می‌شود', conozco: 'می‌شناسم', conoce: 'می‌شناسد', parece: 'به نظر می‌رسد', siento: 'احساس می‌کنم', pienso: 'فکر می‌کنم', vuelve: 'برمی‌گردد', duerme: 'می‌خوابد', pido: 'درخواست می‌کنم', leo: 'می‌خوانم', escribo: 'می‌نویسم', como: 'می‌خورم / مثل', vivo: 'زندگی می‌کنم', trabajo: 'کار می‌کنم', hablo: 'صحبت می‌کنم',
-  había: 'بود', hay: 'هست', era: 'بود (بودن)', estaba: 'بود (موقتی)', tenía: 'داشت', hacía: 'انجام می‌داد',
+  soy: 'هستم (بودن)', eres: 'هستی', es: 'است', somos: 'هستیم', son: 'هستند', estoy: 'هستم (حالت یا مکان)', está: 'است (حالت یا مکان)', tengo: 'دارم', tiene: 'دارد', hago: 'انجام می‌دهم', hace: 'انجام می‌دهد / پیش (در عبارت‌های زمانی)', hice: 'انجام دادم', hizo: 'انجام داد (او)', hecho: 'انجام شده', digo: 'می‌گویم', dice: 'می‌گوید', dije: 'گفتم', dijo: 'گفت', voy: 'می‌روم', va: 'می‌رود', fui: 'رفتم / بودم', fue: 'رفت / بود', veo: 'می‌بینم', ve: 'می‌بیند / ببین! / برو!', ven: 'می‌بینند / ببینید! / بیا!', vi: 'دیدم', vio: 'دید', doy: 'می‌دهم', da: 'می‌دهد', di: 'دادم', dio: 'داد', sé: 'می‌دانم', sabe: 'می‌داند', quiero: 'می‌خواهم', quiere: 'می‌خواهد', puedo: 'می‌توانم', puede: 'می‌تواند', pongo: 'می‌گذارم', pone: 'می‌گذارد', vengo: 'می‌آیم', viene: 'می‌آید', salgo: 'خارج می‌شوم', sale: 'خارج می‌شود', conozco: 'می‌شناسم', conoce: 'می‌شناسد', parece: 'به نظر می‌رسد', siento: 'احساس می‌کنم / می‌نشانم', pienso: 'فکر می‌کنم', vuelve: 'برمی‌گردد', duerme: 'می‌خوابد', pido: 'درخواست می‌کنم', leo: 'می‌خوانم', escribo: 'می‌نویسم', como: 'می‌خورم (فعل) / مانند، مثل', vivo: 'زنده / زندگی می‌کنم', trabajo: 'کار / کار می‌کنم', hablo: 'صحبت می‌کنم',
+  había: 'بود', hay: 'هست', era: 'بود (بودن)', estaba: 'بود (حالت یا مکان)', tenía: 'داشت', hacía: 'انجام می‌داد',
 };
 
 /* --- Verb infinitive translations --- */
+/* Curated infinitive glosses; absent entries intentionally have no offline meaning. */
 const verbInfinitiveEn = {
-  ser: 'to be (identity)',
-  estar: 'to be (state/location)',
-  tener: 'to have',
-  hacer: 'to do / to make',
-  hacerse: 'to become / to make oneself',
-  hacerle: 'to do/make for him/her',
-  hacerme: 'to do/make for me',
-  hacerte: 'to do/make for you',
-  hacernos: 'to do/make for us',
-  hacerles: 'to do/make for them',
-  decir: 'to say / to tell',
-  ir: 'to go',
-  irse: 'to leave / to go away',
-  ver: 'to see',
-  dar: 'to give',
-  saber: 'to know (fact)',
-  conocer: 'to know (person/place)',
-  querer: 'to want / to love',
-  llegar: 'to arrive',
-  pasar: 'to happen / to pass',
-  deber: 'to owe / should',
-  poner: 'to put / to place',
-  ponerse: 'to put on / to become',
-  parecer: 'to seem / to look like',
-  parecerse: 'to look like',
-  quedar: 'to stay / to remain / to be left',
-  quedarse: 'to stay (reflexive)',
-  creer: 'to believe',
-  hablar: 'to speak / to talk',
-  llevar: 'to carry / to wear / to take',
-  dejar: 'to leave / to let',
-  seguir: 'to follow / to continue',
-  encontrar: 'to find / to meet',
-  encontrarse: 'to meet / to find oneself',
-  llamar: 'to call',
-  llamarse: 'to be called',
-  venir: 'to come',
-  pensar: 'to think',
-  salir: 'to go out / to leave',
-  volver: 'to return / to come back',
-  volverse: 'to become',
-  tomar: 'to take / to drink',
-  vivir: 'to live',
-  sentir: 'to feel',
-  sentirse: 'to feel (reflexive)',
-  tratar: 'to try / to treat',
-  mirar: 'to look / to watch',
-  contar: 'to count / to tell',
-  empezar: 'to begin / to start',
-  esperar: 'to wait / to hope / to expect',
-  buscar: 'to look for / to search',
-  existir: 'to exist',
-  entrar: 'to enter',
-  trabajar: 'to work',
-  escribir: 'to write',
-  perder: 'to lose',
-  producir: 'to produce',
-  ocurrir: 'to happen / to occur',
-  entender: 'to understand',
-  pedir: 'to ask for / to request',
-  recibir: 'to receive',
-  recordar: 'to remember',
-  terminar: 'to finish',
-  permitir: 'to allow',
-  aparecer: 'to appear',
-  conseguir: 'to get / to achieve',
-  comenzar: 'to begin',
-  servir: 'to serve / to be useful',
-  sacar: 'to take out',
-  mantener: 'to keep / to maintain',
-  resultar: 'to turn out / to result',
-  leer: 'to read',
-  caer: 'to fall',
-  caerse: 'to fall down',
-  cambiar: 'to change',
-  presentar: 'to present',
-  crear: 'to create',
-  abrir: 'to open',
-  considerar: 'to consider',
-  oír: 'to hear',
-  oir: 'to hear',
-  acabar: 'to finish / to end',
-  convertir: 'to convert / to become',
-  convertirse: 'to become',
-  ganar: 'to win / to earn',
-  formar: 'to form',
-  traer: 'to bring',
-  partir: 'to leave / to split',
-  morir: 'to die',
-  jugar: 'to play',
-  preguntar: 'to ask',
-  responder: 'to answer',
-  aprender: 'to learn',
-  comprender: 'to understand',
-  correr: 'to run',
-  comer: 'to eat',
-  beber: 'to drink',
-  dormir: 'to sleep',
-  dormirse: 'to fall asleep',
-  despertar: 'to wake up',
-  despertarse: 'to wake up (reflexive)',
-  levantar: 'to lift / to raise',
-  levantarse: 'to get up',
-  sentar: 'to seat',
-  sentarse: 'to sit down',
-  acostar: 'to lay down',
-  acostarse: 'to go to bed',
-  vestir: 'to dress',
-  vestirse: 'to get dressed',
-  bañar: 'to bathe',
-  bañarse: 'to take a bath',
-  ducharse: 'to take a shower',
-  lavar: 'to wash',
-  lavarse: 'to wash oneself',
-  gustar: 'to like (to be pleasing to)',
-  encantar: 'to love / to delight',
-  faltar: 'to lack / to be missing',
-  importar: 'to matter / to import',
-  interesar: 'to interest',
-  doler: 'to hurt',
-  haber: 'to have (auxiliary) / there is/are',
-  poder: 'to be able / can',
-  andar: 'to walk / to go',
-  valer: 'to be worth',
-  caber: 'to fit',
-  caer: 'to fall',
-  conducir: 'to drive / to lead',
-  traducir: 'to translate',
-  traer: 'to bring',
-  construir: 'to build',
-  huir: 'to flee',
-  reír: 'to laugh',
-  reir: 'to laugh',
-  sonreír: 'to smile',
-  sonreir: 'to smile',
-  freír: 'to fry',
-  freir: 'to fry',
-  vestir: 'to dress',
-  pedir: 'to ask for',
-  servir: 'to serve',
-  repetir: 'to repeat',
-  seguir: 'to follow',
-  sentir: 'to feel',
-  preferir: 'to prefer',
-  dormir: 'to sleep',
-  morir: 'to die',
-  contar: 'to tell / to count',
-  mostrar: 'to show',
-  probar: 'to try / to taste',
-  cerrar: 'to close',
-  perder: 'to lose',
-  entender: 'to understand',
-  recordar: 'to remember',
-  mover: 'to move',
-  volver: 'to return',
-  empezar: 'to begin',
-  encontrar: 'to find',
-  despertar: 'to wake',
-  jugar: 'to play',
-  detener: 'to stop / to detain',
-  conocer: 'to know',
-  parecer: 'to seem',
-  desvanecer: 'to fade / to vanish',
-  desvanecerse: 'to fade away',
+  "ser": "to be",
+  "estar": "to be (state or location)",
+  "tener": "to have",
+  "hacer": "to do / to make",
+  "hacerse": "to become / to make oneself",
+  "hacerle": "to do or make something for him/her",
+  "decir": "to say / to tell",
+  "ir": "to go",
+  "irse": "to leave / to go away",
+  "ver": "to see",
+  "dar": "to give",
+  "saber": "to know (a fact or how to do something)",
+  "conocer": "to know (a person/place); to be familiar with",
+  "querer": "to want / to love",
+  "llegar": "to arrive",
+  "pasar": "to pass; to happen; to spend (time)",
+  "deber": "to owe; should/must (depending on context)",
+  "poner": "to put; to place; to set",
+  "ponerse": "to put on / to become",
+  "parecer": "to seem; to appear",
+  "parecerse": "to resemble",
+  "quedar": "to stay / to remain / to be left",
+  "quedarse": "to stay; to remain",
+  "creer": "to believe",
+  "hablar": "to speak / to talk",
+  "llevar": "to carry; to wear; to take along",
+  "dejar": "to leave; to let; to allow",
+  "seguir": "to follow; to continue",
+  "encontrar": "to find; to come across",
+  "encontrarse": "to meet (with); to find oneself",
+  "llamar": "to call",
+  "llamarse": "to be called",
+  "venir": "to come",
+  "pensar": "to think",
+  "salir": "to go out / to leave",
+  "volver": "to return; to come back",
+  "volverse": "to become",
+  "tomar": "to take / to drink",
+  "vivir": "to live",
+  "sentir": "to feel",
+  "sentirse": "to feel",
+  "tratar": "to treat; to try (tratar de + infinitive)",
+  "mirar": "to look at; to watch",
+  "contar": "to count; to tell (a story)",
+  "empezar": "to begin",
+  "esperar": "to wait; to hope; to expect",
+  "buscar": "to look for / to search",
+  "existir": "to exist",
+  "entrar": "to enter",
+  "trabajar": "to work",
+  "escribir": "to write",
+  "perder": "to lose",
+  "producir": "to produce",
+  "ocurrir": "to happen / to occur",
+  "entender": "to understand",
+  "pedir": "to ask for; to request",
+  "recibir": "to receive",
+  "recordar": "to remember",
+  "terminar": "to finish",
+  "permitir": "to allow",
+  "aparecer": "to appear",
+  "conseguir": "to get; to obtain; to manage to",
+  "comenzar": "to begin",
+  "servir": "to serve; to be useful",
+  "sacar": "to take out; to remove",
+  "mantener": "to keep; to maintain",
+  "resultar": "to turn out; to result",
+  "leer": "to read",
+  "caer": "to fall",
+  "caerse": "to fall; to fall down",
+  "cambiar": "to change",
+  "presentar": "to present; to introduce",
+  "crear": "to create",
+  "abrir": "to open",
+  "considerar": "to consider",
+  "oír": "to hear",
+  "oir": "to hear",
+  "acabar": "to finish; to end; to end up",
+  "convertir": "to convert; to turn (something into something else)",
+  "convertirse": "to become; to turn into",
+  "ganar": "to win / to earn",
+  "formar": "to form",
+  "traer": "to bring",
+  "partir": "to split; to depart",
+  "morir": "to die",
+  "jugar": "to play",
+  "preguntar": "to ask",
+  "responder": "to answer",
+  "aprender": "to learn",
+  "comprender": "to understand",
+  "correr": "to run",
+  "comer": "to eat",
+  "beber": "to drink",
+  "dormir": "to sleep",
+  "dormirse": "to fall asleep",
+  "despertar": "to wake (someone) up",
+  "despertarse": "to wake up",
+  "levantar": "to lift; to raise",
+  "levantarse": "to get up; to stand up",
+  "sentar": "to seat (someone)",
+  "sentarse": "to sit down",
+  "acostar": "to lay (someone) down; to put (someone) to bed",
+  "acostarse": "to lie down; to go to bed",
+  "vestir": "to dress; to clothe (someone)",
+  "vestirse": "to get dressed",
+  "bañar": "to bathe (someone)",
+  "bañarse": "to bathe; to take a bath",
+  "ducharse": "to shower; to take a shower",
+  "lavar": "to wash",
+  "lavarse": "to wash oneself",
+  "gustar": "to like (literally, to be pleasing to someone)",
+  "encantar": "to love (very much); to delight",
+  "faltar": "to be missing; to be lacking",
+  "importar": "to matter; to import",
+  "interesar": "to interest; to be of interest to",
+  "doler": "to hurt; to ache",
+  "haber": "to have (auxiliary); there is/are (impersonal hay)",
+  "poder": "to be able to; can",
+  "andar": "to walk; to go around",
+  "valer": "to be worth",
+  "caber": "to fit",
+  "conducir": "to drive; to lead",
+  "traducir": "to translate",
+  "construir": "to build",
+  "huir": "to flee; to run away",
+  "reír": "to laugh",
+  "reir": "to laugh",
+  "sonreír": "to smile",
+  "sonreir": "to smile",
+  "freír": "to fry",
+  "freir": "to fry",
+  "repetir": "to repeat",
+  "preferir": "to prefer",
+  "mostrar": "to show",
+  "probar": "to try; to test; to taste",
+  "cerrar": "to close; to shut",
+  "mover": "to move",
+  "detener": "to stop; to detain",
+  "desvanecer": "to make disappear; to dissipate",
+  "desvanecerse": "to fade away; to vanish",
+
+  // Remaining built-in verbs recognized by the conjugation bank.
+  "abandonar": "to abandon; to leave behind",
+  "abrazar": "to hug; to embrace",
+  "aburrir": "to bore",
+  "aceptar": "to accept",
+  "acompañar": "to accompany; to go with",
+  "acordar": "to agree; to decide",
+  "actuar": "to act; to perform",
+  "admirar": "to admire",
+  "admitir": "to admit; to accept",
+  "adquirir": "to acquire; to obtain",
+  "advertir": "to warn; to notice",
+  "alcanzar": "to reach; to achieve",
+  "almorzar": "to have lunch",
+  "alquilar": "to rent; to lease",
+  "amar": "to love",
+  "animar": "to encourage; to cheer up",
+  "anunciar": "to announce; to advertise",
+  "apagar": "to turn off; to extinguish",
+  "apostar": "to bet; to wager",
+  "apoyar": "to support",
+  "aprobar": "to approve; to pass (an exam)",
+  "aprovechar": "to make use of; to take advantage of",
+  "arrastrar": "to drag",
+  "arreglar": "to fix; to arrange",
+  "asustar": "to scare; to frighten",
+  "atacar": "to attack",
+  "atender": "to attend to; to serve",
+  "atravesar": "to cross; to go through",
+  "avanzar": "to move forward; to advance",
+  "avisar": "to notify; to let someone know",
+  "ayudar": "to help",
+  "bailar": "to dance",
+  "bajar": "to go down; to lower",
+  "barrer": "to sweep",
+  "besar": "to kiss",
+  "brillar": "to shine",
+  "bromear": "to joke",
+  "calentar": "to heat; to warm",
+  "caminar": "to walk",
+  "cantar": "to sing",
+  "cargar": "to load; to carry; to charge",
+  "cenar": "to have dinner",
+  "charlar": "to chat; to talk",
+  "chocar": "to collide; to bump into",
+  "citar": "to cite; to quote; to make an appointment",
+  "cocinar": "to cook",
+  "coger": "to take; to grab (usage varies by region)",
+  "colocar": "to place; to put",
+  "comentar": "to comment",
+  "compartir": "to share",
+  "competir": "to compete",
+  "componer": "to compose; to put together; to repair",
+  "comprar": "to buy",
+  "confundir": "to confuse; to mix up",
+  "congelar": "to freeze",
+  "consentir": "to consent; to indulge (someone)",
+  "conservar": "to keep; to preserve",
+  "contener": "to contain",
+  "continuar": "to continue",
+  "contribuir": "to contribute",
+  "conversar": "to converse; to talk",
+  "copiar": "to copy",
+  "corregir": "to correct; to fix",
+  "cortar": "to cut",
+  "coser": "to sew",
+  "costar": "to cost; to be difficult",
+  "crecer": "to grow",
+  "cruzar": "to cross",
+  "cubrir": "to cover",
+  "cuidar": "to care for; to look after",
+  "cumplir": "to fulfill; to complete; to turn (an age)",
+  "dañar": "to damage; to harm",
+  "decorar": "to decorate",
+  "dedicar": "to dedicate; to devote",
+  "defender": "to defend",
+  "demostrar": "to demonstrate; to show",
+  "desarrollar": "to develop",
+  "desayunar": "to have breakfast",
+  "descansar": "to rest",
+  "descender": "to descend; to go down",
+  "descubrir": "to discover; to uncover",
+  "desear": "to wish; to desire",
+  "desordenar": "to disorder; to mess up",
+  "despedir": "to dismiss; to fire; to see off",
+  "destruir": "to destroy",
+  "devolver": "to return; to give back",
+  "dibujar": "to draw",
+  "dirigir": "to direct; to lead",
+  "disfrutar": "to enjoy",
+  "disponer": "to arrange; to provide; to have at one's disposal",
+  "distribuir": "to distribute",
+  "divertir": "to amuse; to entertain",
+  "dividir": "to divide",
+  "dudar": "to doubt; to hesitate",
+  "durar": "to last",
+  "echar": "to throw; to put; to cast",
+  "educar": "to educate; to raise",
+  "elegir": "to choose; to select",
+  "empujar": "to push",
+  "encender": "to light; to turn on",
+  "enfermar": "to become ill; to make someone ill",
+  "enfriar": "to cool; to chill",
+  "enojar": "to anger; to annoy",
+  "ensayar": "to rehearse; to test",
+  "enseñar": "to teach; to show",
+  "entregar": "to deliver; to hand over",
+  "entrenar": "to train",
+  "entretener": "to entertain; to keep occupied",
+  "enviar": "to send",
+  "escapar": "to escape",
+  "escoger": "to choose; to select",
+  "esconder": "to hide",
+  "escuchar": "to listen to; to hear",
+  "estudiar": "to study",
+  "evitar": "to avoid",
+  "examinar": "to examine",
+  "exigir": "to demand; to require",
+  "explicar": "to explain",
+  "exponer": "to expose; to present",
+  "extender": "to extend; to spread",
+  "extrañar": "to miss (someone); to find strange",
+  "fabricar": "to manufacture; to make",
+  "fallar": "to fail; to malfunction",
+  "felicitar": "to congratulate",
+  "fingir": "to pretend; to feign",
+  "firmar": "to sign",
+  "forzar": "to force",
+  "funcionar": "to function; to work",
+  "garantizar": "to guarantee",
+  "gastar": "to spend; to use up",
+  "girar": "to turn; to rotate",
+  "gritar": "to shout; to yell",
+  "guardar": "to keep; to save; to put away",
+  "hallar": "to find",
+  "heredar": "to inherit",
+  "herir": "to wound; to injure",
+  "hervir": "to boil",
+  "hornear": "to bake",
+  "hospedar": "to host; to lodge",
+  "humillar": "to humiliate",
+  "hundir": "to sink; to submerge",
+  "identificar": "to identify",
+  "ignorar": "to ignore; to be unaware of",
+  "imaginar": "to imagine",
+  "impedir": "to prevent",
+  "imponer": "to impose",
+  "impresionar": "to impress",
+  "imprimir": "to print",
+  "incluir": "to include",
+  "influir": "to influence",
+  "inscribir": "to register; to enroll",
+  "insistir": "to insist",
+  "inspirar": "to inspire",
+  "instalar": "to install",
+  "insultar": "to insult",
+  "intentar": "to try; to attempt",
+  "interpretar": "to interpret; to perform",
+  "interrumpir": "to interrupt",
+  "intervenir": "to intervene",
+  "invertir": "to invest; to reverse",
+  "investigar": "to investigate",
+  "invitar": "to invite",
+  "juzgar": "to judge",
+  "lanzar": "to throw; to launch",
+  "lastimar": "to hurt; to injure",
+  "latir": "to beat; to pulse",
+  "liberar": "to free; to release",
+  "limitar": "to limit; to restrict",
+  "limpiar": "to clean",
+  "llorar": "to cry; to weep",
+  "mandar": "to send; to order; to command",
+  "marcar": "to mark; to dial; to score",
+  "medir": "to measure",
+  "mejorar": "to improve; to get better",
+  "mentir": "to lie (tell an untruth)",
+  "merecer": "to deserve",
+  "molestar": "to bother; to annoy",
+  "montar": "to mount; to assemble; to ride",
+  "morder": "to bite",
+  "nacer": "to be born",
+  "nadar": "to swim",
+  "necesitar": "to need",
+  "negar": "to deny; to refuse",
+  "negociar": "to negotiate",
+  "nombrar": "to name; to appoint",
+  "notar": "to notice",
+  "obedecer": "to obey",
+  "observar": "to observe; to watch",
+  "obtener": "to obtain; to get",
+  "ocupar": "to occupy; to use; to take up",
+  "odiar": "to hate",
+  "ofrecer": "to offer",
+  "oler": "to smell; to smell of",
+  "olvidar": "to forget",
+  "omitir": "to omit",
+  "optar": "to opt; to choose",
+  "ordenar": "to order; to arrange",
+  "organizar": "to organize",
+  "oscurecer": "to darken; to get dark",
+  "padecer": "to suffer; to endure",
+  "pagar": "to pay",
+  "parar": "to stop",
+  "pasear": "to stroll; to take a walk",
+  "pegar": "to hit; to stick; to glue",
+  "peinar": "to comb (hair)",
+  "pelear": "to fight; to argue",
+  "percibir": "to perceive; to notice",
+  "permanecer": "to remain; to stay",
+  "perseguir": "to pursue; to chase",
+  "pescar": "to fish; to catch fish",
+  "picar": "to sting; to chop (food)",
+  "pintar": "to paint",
+  "planear": "to plan",
+  "plantar": "to plant",
+  "platicar": "to chat; to talk (especially in Latin America)",
+  "poseer": "to possess; to own",
+  "posponer": "to postpone",
+  "practicar": "to practice",
+  "preparar": "to prepare",
+  "prestar": "to lend",
+  "prevenir": "to prevent; to warn",
+  "prohibir": "to prohibit; to forbid",
+  "pronunciar": "to pronounce",
+  "proponer": "to propose; to suggest",
+  "proteger": "to protect",
+  "proveer": "to provide; to supply",
+  "provocar": "to provoke; to cause",
+  "publicar": "to publish",
+  "quejar": "to complain (usually used as quejarse)",
+  "quemar": "to burn",
+  "quitar": "to remove; to take away; to take off",
+  "rascar": "to scratch",
+  "rayar": "to scratch; to grate",
+  "realizar": "to carry out; to perform",
+  "reconocer": "to recognize; to acknowledge",
+  "reducir": "to reduce",
+  "regalar": "to give as a gift",
+  "regar": "to water; to irrigate",
+  "registrar": "to register; to record; to search",
+  "regresar": "to return; to go back",
+  "relajar": "to relax; to loosen",
+  "rellenar": "to fill; to fill in",
+  "remar": "to row",
+  "rendir": "to yield; to produce; to perform",
+  "rentar": "to rent; to lease (regional usage)",
+  "reparar": "to repair; to fix",
+  "rescatar": "to rescue",
+  "resistir": "to resist; to endure",
+  "resolver": "to solve; to resolve",
+  "respirar": "to breathe",
+  "retener": "to retain; to hold back",
+  "retirar": "to withdraw; to remove",
+  "retratar": "to portray; to photograph",
+  "reunir": "to gather; to bring together",
+  "revisar": "to review; to check",
+  "rezar": "to pray",
+  "rodar": "to roll; to film",
+  "rodear": "to surround",
+  "romper": "to break",
+  "roncar": "to snore",
+  "ruborizar": "to make someone blush; to redden",
+  "sacudir": "to shake; to dust off",
+  "saltar": "to jump; to leap",
+  "saludar": "to greet",
+  "salvar": "to save; to rescue",
+  "sanar": "to heal",
+  "sangrar": "to bleed",
+  "satisfacer": "to satisfy",
+  "secar": "to dry",
+  "separar": "to separate",
+  "sobrar": "to be left over; to be extra",
+  "soler": "to usually do (soler + infinitive)",
+  "solicitar": "to request; to apply for",
+  "soltar": "to release; to let go",
+  "soñar": "to dream",
+  "soplar": "to blow",
+  "soportar": "to tolerate; to endure",
+  "sorprender": "to surprise",
+  "sostener": "to hold; to support; to maintain",
+  "subir": "to go up; to raise; to upload",
+  "subrayar": "to underline",
+  "suceder": "to happen; to follow",
+  "sufrir": "to suffer",
+  "sugerir": "to suggest",
+  "sumar": "to add; to sum",
+  "suponer": "to suppose; to assume",
+  "suspirar": "to sigh",
+  "sustituir": "to replace; to substitute",
+  "susurrar": "to whisper",
+  "tachar": "to cross out; to label as",
+  "tapar": "to cover; to block",
+  "tardar": "to take time; to delay",
+  "tejer": "to weave; to knit",
+  "telefonear": "to phone; to call",
+  "temer": "to fear; to be afraid of",
+  "tender": "to stretch out; to lay out; to hang (laundry)",
+  "tirar": "to throw; to throw away; to pull",
+  "tocar": "to touch; to play (an instrument); to be someone's turn",
+  "toser": "to cough",
+  "tragar": "to swallow",
+  "traicionar": "to betray",
+  "tranquilizar": "to calm; to reassure",
+  "transmitir": "to transmit; to broadcast",
+  "transportar": "to transport; to carry",
+  "trepar": "to climb",
+  "triunfar": "to triumph; to succeed",
+  "ubicar": "to locate; to place",
+  "unir": "to join; to unite",
+  "untar": "to spread; to smear",
+  "usar": "to use; to wear",
+  "vaciar": "to empty; to drain",
+  "variar": "to vary; to change",
+  "velar": "to watch over; to keep vigil",
+  "vencer": "to defeat; to overcome; to expire (a deadline)",
+  "vendar": "to bandage; to blindfold",
+  "vender": "to sell",
+  "vengar": "to avenge",
+  "ventilar": "to ventilate; to air out",
+  "verificar": "to verify; to check",
+  "verter": "to pour; to spill",
+  "viajar": "to travel",
+  "vigilar": "to watch; to guard",
+  "visitar": "to visit",
+  "volar": "to fly",
+  "vomitar": "to vomit",
+  "votar": "to vote",
+  "zarpar": "to set sail; to depart",
+
+  // Common pronominal forms whose meaning differs from the base verb.
+  "aburrirse": "to get bored",
+  "acordarse": "to remember",
+  "arrepentirse": "to repent; to regret",
+  "divertirse": "to have fun",
+  "enfermarse": "to get sick",
+  "enojarse": "to get angry",
+  "quejarse": "to complain",
 };
 
+/* Curated infinitive glosses for verbs used by the built-in flashcard bank. */
 const verbInfinitiveFa = {
-  ser: 'بودن (هویت)',
-  estar: 'بودن (موقعیت)',
-  tener: 'داشتن',
-  hacer: 'انجام دادن / ساختن',
-  hacerse: 'شدن / خود را ساختن',
-  hacerle: 'برای او انجام دادن',
-  decir: 'گفتن',
-  ir: 'رفتن',
-  ver: 'دیدن',
-  dar: 'دادن',
-  saber: 'دانستن (حقیقت)',
-  conocer: 'شناختن',
-  querer: 'خواستن',
-  llegar: 'رسیدن',
-  pasar: 'اتفاق افتادن / گذشتن',
-  poner: 'گذاشتن',
-  parecer: 'به نظر رسیدن',
-  quedar: 'ماندن',
-  creer: 'باور کردن',
-  hablar: 'صحبت کردن',
-  llevar: 'حمل کردن / بردن',
-  dejar: 'گذاشتن / اجازه دادن',
-  seguir: 'دنبال کردن / ادامه دادن',
-  encontrar: 'پیدا کردن',
-  llamar: 'صدا زدن',
-  venir: 'آمدن',
-  pensar: 'فکر کردن',
-  salir: 'خارج شدن',
-  volver: 'برگشتن',
-  tomar: 'گرفتن / نوشیدن',
-  vivir: 'زندگی کردن',
-  sentir: 'احساس کردن',
-  mirar: 'نگاه کردن',
-  contar: 'شمردن / تعریف کردن',
-  empezar: 'شروع کردن',
-  esperar: 'صبر کردن / امیدوار بودن',
-  buscar: 'جستجو کردن',
-  entrar: 'وارد شدن',
-  trabajar: 'کار کردن',
-  escribir: 'نوشتن',
-  perder: 'گم کردن',
-  entender: 'فهمیدن',
-  pedir: 'درخواست کردن',
-  recibir: 'دریافت کردن',
-  recordar: 'به خاطر آوردن',
-  terminar: 'تمام کردن',
-  leer: 'خواندن',
-  caer: 'افتادن',
-  cambiar: 'تغییر دادن',
-  abrir: 'باز کردن',
-  considerar: 'در نظر گرفتن',
-  ganar: 'برنده شدن / به دست آوردن',
-  traer: 'آوردن',
-  morir: 'مردن',
-  jugar: 'بازی کردن',
-  preguntar: 'پرسیدن',
-  comer: 'خوردن',
-  beber: 'نوشیدن',
-  dormir: 'خوابیدن',
-  despertar: 'بیدار شدن',
-  levantar: 'بلند کردن',
-  sentarse: 'نشستن',
-  acostarse: 'خوابیدن',
-  gustar: 'خوش آمدن',
-  haber: 'داشتن / وجود داشتن',
-  poder: 'توانستن',
+  "ser": "بودن",
+  "estar": "بودن (حالت یا مکان)",
+  "tener": "داشتن",
+  "hacer": "انجام دادن / ساختن",
+  "hacerse": "شدن / خود را ... کردن",
+  "hacerle": "کاری برای او انجام دادن",
+  "decir": "گفتن",
+  "ir": "رفتن",
+  "ver": "دیدن",
+  "dar": "دادن",
+  "saber": "دانستن (حقیقت)",
+  "conocer": "شناختن",
+  "querer": "خواستن / دوست داشتن",
+  "llegar": "رسیدن",
+  "pasar": "اتفاق افتادن / گذشتن",
+  "poner": "گذاشتن",
+  "parecer": "به نظر رسیدن",
+  "quedar": "ماندن / باقی ماندن",
+  "creer": "باور کردن",
+  "hablar": "صحبت کردن",
+  "llevar": "حمل کردن / پوشیدن / بردن",
+  "dejar": "گذاشتن / اجازه دادن",
+  "seguir": "دنبال کردن / ادامه دادن",
+  "encontrar": "پیدا کردن",
+  "llamar": "صدا زدن",
+  "venir": "آمدن",
+  "pensar": "فکر کردن",
+  "salir": "خارج شدن",
+  "volver": "برگشتن",
+  "tomar": "گرفتن / نوشیدن",
+  "vivir": "زندگی کردن",
+  "sentir": "احساس کردن",
+  "mirar": "نگاه کردن",
+  "contar": "شمردن / تعریف کردن",
+  "empezar": "شروع کردن",
+  "esperar": "صبر کردن / امیدوار بودن",
+  "buscar": "جستجو کردن",
+  "entrar": "وارد شدن",
+  "trabajar": "کار کردن",
+  "escribir": "نوشتن",
+  "perder": "گم کردن",
+  "entender": "فهمیدن",
+  "pedir": "درخواست کردن",
+  "recibir": "دریافت کردن",
+  "recordar": "به خاطر آوردن",
+  "terminar": "تمام کردن",
+  "leer": "خواندن",
+  "caer": "افتادن",
+  "cambiar": "تغییر دادن",
+  "abrir": "باز کردن",
+  "considerar": "در نظر گرفتن",
+  "ganar": "برنده شدن / به دست آوردن",
+  "traer": "آوردن",
+  "morir": "مردن",
+  "jugar": "بازی کردن",
+  "preguntar": "پرسیدن",
+  "comer": "خوردن",
+  "beber": "نوشیدن",
+  "dormir": "خوابیدن",
+  "despertar": "بیدار کردن",
+  "levantar": "بلند کردن",
+  "sentarse": "نشستن",
+  "acostarse": "به رختخواب رفتن / دراز کشیدن",
+  "gustar": "خوش آمدن",
+  "haber": "داشتن / وجود داشتن",
+  "poder": "توانستن",
+  "encontrarse": "با کسی ملاقات کردن / خود را در وضعیتی یافتن",
+  "irse": "رفتن / از جایی رفتن",
+  "quedarse": "ماندن",
+  "sentirse": "احساس کردن",
+  "deber": "بدهکار بودن / باید",
+  "ponerse": "پوشیدن / شدن",
+  "convertir": "تبدیل کردن",
+  "convertirse": "تبدیل شدن",
+  "despertarse": "از خواب بیدار شدن",
+  "levantarse": "بلند شدن / از جا برخاستن",
+  "sentar": "نشاندن",
+  "acostar": "خواباندن / به رختخواب گذاشتن",
+  "vestir": "لباس پوشاندن",
+  "vestirse": "لباس پوشیدن",
+  "bañar": "حمام دادن",
+  "bañarse": "حمام کردن",
+  "ducharse": "دوش گرفتن",
+  "lavar": "شستن",
+  "lavarse": "خود را شستن",
+  "dormirse": "به خواب رفتن",
+  "desvanecer": "محو کردن / ناپدید کردن",
+  "desvanecerse": "محو شدن / از بین رفتن",
 };
 
-const verbPastEn = {
-  ser: 'was/were',
-  estar: 'was/were',
-  tener: 'had',
-  hacer: 'did / made',
-  decir: 'said',
-  ir: 'went',
-  ver: 'saw',
-  dar: 'gave',
-  saber: 'knew',
-  conocer: 'knew (person/place)',
-  querer: 'wanted',
-  llegar: 'arrived',
-  pasar: 'happened / passed',
-  poner: 'put',
-  parecer: 'seemed',
-  quedar: 'stayed / remained',
-  creer: 'believed',
-  hablar: 'spoke',
-  llevar: 'carried / wore',
-  dejar: 'left / let',
-  seguir: 'followed / continued',
-  encontrar: 'found / met',
-  llamar: 'called',
-  venir: 'came',
-  pensar: 'thought',
-  salir: 'went out / left',
-  volver: 'returned',
-  tomar: 'took / drank',
-  vivir: 'lived',
-  sentir: 'felt',
-  mirar: 'looked / watched',
-  contar: 'told / counted',
-  empezar: 'began / started',
-  esperar: 'waited / hoped',
-  buscar: 'looked for / searched',
-  entrar: 'entered',
-  trabajar: 'worked',
-  escribir: 'wrote',
-  perder: 'lost',
-  producir: 'produced',
-  entender: 'understood',
-  pedir: 'asked for',
-  recibir: 'received',
-  recordar: 'remembered',
-  terminar: 'finished',
-  leer: 'read',
-  caer: 'fell',
-  cambiar: 'changed',
-  abrir: 'opened',
-  considerar: 'considered',
-  traer: 'brought',
-  morir: 'died',
-  jugar: 'played',
-  preguntar: 'asked',
-  comer: 'ate',
-  beber: 'drank',
-  dormir: 'slept',
-  despertar: 'woke up',
-  levantar: 'lifted / got up',
-  sentarse: 'sat down',
-  acostarse: 'went to bed',
-  gustar: 'liked',
-  haber: 'had / there was',
-  poder: 'could / was able',
-  haber: 'had',
-};
-
-const pronounEnMap = {
-  me: 'to me / me',
-  te: 'to you / you',
-  se: 'reflexive/impersonal marker / himself/herself/itself/themselves',
-  le: 'to him/her/you (indirect)',
-  les: 'to them/you (plural)',
-  nos: 'to us / us',
-  os: 'to you (plural)',
-  lo: 'him / it (masc direct)',
-  la: 'her / it (fem direct)',
-  los: 'them (masc)',
-  las: 'them (fem)',
-};
-
-const indirectPronounEnglish = {
-  me: 'to me',
-  te: 'to you',
-  le: 'to him/her',
-  nos: 'to us',
-  os: 'to you (plural)',
-  les: 'to them',
-  se: 'to him/her/them (when replacing le/les before lo/la)'
-};
-
-/* Comprehensive dictionaries for fallback */
+/* Exact offline word dictionaries */
 const comprehensiveEn = (() => {
   const base = {};
-  // Merge miniDictionary (already comprehensive)
+  // Start with curated single-word entries, including blank entries for ambiguity.
   Object.assign(base, miniDictionary);
-  // Add verb infinitives without 'to'
+  // Add only exact, curated infinitive keys; never manufacture accentless aliases.
   Object.entries(verbInfinitiveEn).forEach(([es, en]) => {
-    const cleaned = en.replace(/^to\s+/, '').split(' / ')[0].split(' (')[0].trim();
     if (!base[es]) base[es] = en;
-    // Also add without accent version
-    const noAccent = es.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    if (noAccent !== es && !base[noAccent]) base[noAccent] = en;
   });
-  // Add past forms mapping for quick lookup of conjugated forms via infinitive? Not needed, verb analysis handles
   return base;
 })();
 
@@ -1075,9 +1331,6 @@ function normalizeTranslationPhrase(text) {
     .replace(/\s+/g, ' ')
     .trim();
 }
-function stripAccents(str) {
-  return String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-}
 
 const phraseTranslations = {
   'la casa de mi abuela': { en: 'my grandmother’s house', fa: 'خانهٔ مادربزرگم' },
@@ -1086,213 +1339,97 @@ const phraseTranslations = {
   'pan recién horneado': { en: 'freshly baked bread', fa: 'نان تازه‌پخته‌شده' },
   'la puerta estaba entreabierta': { en: 'the door was ajar', fa: 'در نیمه‌باز بود' },
   'junto al perchero': { en: 'by the coat rack', fa: 'کنار جالباسی' },
-  'olor delicioso a canela y pan recién horneado': { en: 'a delicious smell of cinnamon and freshly baked bread', fa: 'بوی دل‌انگیز دارچین و نان تازه‌پخته‌شده' },
-  'todo lo que había pasado durante el viaje': { en: 'everything that had happened during the trip', fa: 'همهٔ اتفاقاتی که در طول سفر افتاده بود' },
+  'olor delicioso a canela y pan recién horneado': {
+    en: 'a delicious smell of cinnamon and freshly baked bread',
+    fa: 'بوی دل‌انگیز دارچین و نان تازه‌پخته‌شده'
+  },
+  'todo lo que había pasado durante el viaje': {
+    en: 'everything that had happened during the trip',
+    fa: 'همهٔ اتفاقاتی که در طول سفر افتاده بود'
+  },
   'sin levantar la vista': { en: 'without looking up', fa: 'بدون اینکه نگاهش را بالا بیاورد' },
-  'sin levantar la vista de la masa': { en: 'without looking up from the dough', fa: 'بدون اینکه نگاهش را از خمیر بردارد' },
+  'sin levantar la vista de la masa': {
+    en: 'without looking up from the dough',
+    fa: 'بدون اینکه نگاهش را از خمیر بردارد'
+  },
   'eres tú cariño': { en: 'Is that you, sweetheart?', fa: 'خودتی، عزیزم؟' },
-  'me senté a su lado': { en: 'I sat beside her', fa: 'کنارش نشستم' },
+  'me senté': { en: 'I sat down', fa: 'نشستم' },
+  'me senté a su lado': { en: 'I sat down beside them', fa: 'کنارش نشستم' },
   'se desvanecía lentamente': { en: 'was slowly fading', fa: 'آهسته‌آهسته محو می‌شد' },
-  // New high-quality phrase translations for hacerle constructions and common idioms
-  'se le hizo': { en: 'it became for him/her / it seemed to him/her (from hacerle: to do/make for someone; hizo = he/she/it did/made, preterite of hacer)', fa: 'برای او اینطور شد (از hacerle: برای او انجام دادن؛ hizo = او انجام داد)' },
-  'se me hizo': { en: 'it became/seemed to me (from hacerme: to do/make for me; hice/hizo = I/he did/made)', fa: 'برای من اینطور شد' },
-  'se te hizo': { en: 'it became/seemed to you (from hacerte)', fa: 'برای تو اینطور شد' },
-  'se nos hizo': { en: 'it became/seemed to us (from hacernos)', fa: 'برای ما اینطور شد' },
-  'se os hizo': { en: 'it became/seemed to you (plural)', fa: 'برای شما اینطور شد' },
-  'se les hizo': { en: 'it became/seemed to them (from hacerles)', fa: 'برای آنها اینطور شد' },
-  'se le hizo tarde': { en: 'it got late for him/her / he/she was running late (idiom: se le hizo tarde)', fa: 'برای او دیر شد' },
-  'se me hizo tarde': { en: 'it got late for me / I was running late', fa: 'برای من دیر شد / دیرم شد' },
-  'se te hizo tarde': { en: 'it got late for you', fa: 'برای تو دیر شد' },
-  'se nos hizo tarde': { en: 'it got late for us / we were running late', fa: 'برای ما دیر شد' },
-  'se le hizo difícil': { en: 'it became difficult for him/her (se le hizo difícil)', fa: 'برای او سخت شد' },
-  'se me hizo difícil': { en: 'it became difficult for me / I found it difficult', fa: 'برای من سخت شد' },
-  'se le hizo fácil': { en: 'it became easy for him/her / he/she found it easy', fa: 'برای او آسان شد' },
-  'se me hace que': { en: 'it seems to me that (se me hace que)', fa: 'به نظرم می‌رسد که' },
+
+  // These reflexive constructions need the following word(s) to establish their meaning.
+  'se le hizo tarde': {
+    en: 'he/she ran late; it got late for him/her',
+    fa: 'برای او دیر شد'
+  },
+  'se me hizo tarde': { en: 'I ran late; it got late for me', fa: 'برای من دیر شد / دیرم شد' },
+  'se te hizo tarde': { en: 'you ran late; it got late for you', fa: 'برای تو دیر شد' },
+  'se nos hizo tarde': { en: 'we ran late; it got late for us', fa: 'برای ما دیر شد' },
+  'se le hizo difícil': { en: 'he/she found it difficult', fa: 'برای او سخت شد' },
+  'se me hizo difícil': { en: 'I found it difficult', fa: 'برای من سخت شد' },
+  'se le hizo fácil': { en: 'he/she found it easy', fa: 'برای او آسان شد' },
+  'se me hace que': { en: 'it seems to me that', fa: 'به نظرم می‌رسد که' },
   'se le hace que': { en: 'it seems to him/her that', fa: 'به نظر او می‌رسد که' },
-  'hacerle': { en: 'to do/make for him/her (hacer + le: to do/make + to him/her)', fa: 'برای او انجام دادن' },
-  'hacerle caso': { en: 'to pay attention to him/her', fa: 'به او توجه کردن' },
-  'hacerse': { en: 'to become / to make oneself', fa: 'شدن' },
-  'se hizo': { en: 'it became / he/she made himself/herself (from hacerse: to become)', fa: 'شد / خودش را ساخت' },
-  'se hace': { en: 'it becomes / it is made (from hacerse)', fa: 'می‌شود / ساخته می‌شود' },
-  'se hicieron': { en: 'they became / they made themselves', fa: 'آنها شدند' },
-  'se me hace difícil': { en: 'I find it difficult / it becomes difficult for me', fa: 'برای من سخت است' },
-  'se me hace tarde': { en: 'I’m running late / it’s getting late for me', fa: 'دارم دیر می‌کنم' },
-  'qué se le va a hacer': { en: 'what can you do? / it is what it is (idiom)', fa: 'چه می‌شود کرد' },
-  'se le antojó': { en: 'he/she got a craving for / it occurred to him/her', fa: 'هوس کرد' },
-  'se le ocurrió': { en: 'it occurred to him/her / he/she came up with', fa: 'به ذهنش رسید' },
-  'se le olvidó': { en: 'he/she forgot (it was forgotten to him/her)', fa: 'فراموش کرد / از یادش رفت' },
-  'se me olvidó': { en: 'I forgot (it was forgotten to me)', fa: 'فراموش کردم / از یادم رفت' },
-  'cuando llegué a la casa de mi abuela la puerta estaba entreabierta': { en: 'When I arrived at my grandmother’s house, the door was ajar.', fa: 'وقتی به خانهٔ مادربزرگم رسیدم، در نیمه‌باز بود.' },
-  'entré despacio y dejé la mochila junto al perchero': { en: 'I went in slowly and left my backpack by the coat rack.', fa: 'آهسته وارد شدم و کوله‌پشتی‌ام را کنار جالباسی گذاشتم.' },
-  'desde la cocina llegaba un olor delicioso a canela y pan recién horneado': { en: 'A delicious smell of cinnamon and freshly baked bread drifted from the kitchen.', fa: 'بوی دل‌انگیز دارچین و نان تازه از آشپزخانه می‌آمد.' },
-  'eres tú cariño preguntó ella sin levantar la vista de la masa': { en: '“Is that you, sweetheart?” she asked without looking up from the dough.', fa: '—خودتی، عزیزم؟ او بدون اینکه نگاهش را از خمیر بردارد، پرسید.' },
-  'me senté a su lado y le conté todo lo que había pasado durante el viaje': { en: 'I sat beside her and told her everything that had happened during the trip.', fa: 'کنارش نشستم و همهٔ اتفاقاتی را که در طول سفر افتاده بود برایش تعریف کردم.' },
-  'afuera la tarde se desvanecía lentamente pero dentro de la casa el tiempo parecía haberse detenido': { en: 'Outside, the afternoon was slowly fading, but inside the house time seemed to have stopped.', fa: 'بیرون، عصر کم‌کم رو به پایان می‌رفت، اما داخل خانه انگار زمان از حرکت ایستاده بود.' },
+  'hacerle': { en: 'to do/make something for him/her', fa: 'کاری برای او انجام دادن' },
+  'hacerle caso': { en: 'to pay attention to / listen to him/her', fa: 'به او توجه کردن / به حرفش گوش دادن' },
+  'hacerse': { en: 'to become; to make oneself', fa: 'شدن / خود را ... کردن' },
+  'se me hace difícil': { en: 'I find it difficult', fa: 'برایم سخت است' },
+  'se me hace tarde': { en: 'it is getting late; I am running late', fa: 'دیر شده / دارم دیر می‌کنم' },
+  'qué se le va a hacer': { en: 'what can you do? (idiom)', fa: 'چه می‌شود کرد' },
+  'se le antojó': { en: 'he/she felt like something; something appealed to him/her', fa: 'دلش چیزی خواست / هوس کرد' },
+  'se le ocurrió': { en: 'it occurred to him/her', fa: 'به ذهنش رسید' },
+  'se le olvidó': { en: 'he/she forgot it', fa: 'از یادش رفت' },
+  'se me olvidó': { en: 'I forgot it', fa: 'از یادم رفت' },
+
+  'cuando llegué a la casa de mi abuela la puerta estaba entreabierta': {
+    en: 'When I arrived at my grandmother’s house, the door was ajar.',
+    fa: 'وقتی به خانهٔ مادربزرگم رسیدم، در نیمه‌باز بود.'
+  },
+  'entré despacio y dejé la mochila junto al perchero': {
+    en: 'I went in slowly and left my backpack by the coat rack.',
+    fa: 'آهسته وارد شدم و کوله‌پشتی‌ام را کنار جالباسی گذاشتم.'
+  },
+  'desde la cocina llegaba un olor delicioso a canela y pan recién horneado': {
+    en: 'A delicious smell of cinnamon and freshly baked bread drifted from the kitchen.',
+    fa: 'بوی دل‌انگیز دارچین و نان تازه از آشپزخانه می‌آمد.'
+  },
+  'eres tú cariño preguntó ella sin levantar la vista de la masa': {
+    en: '“Is that you, sweetheart?” she asked without looking up from the dough.',
+    fa: '—خودتی، عزیزم؟ او بدون اینکه نگاهش را از خمیر بردارد، پرسید.'
+  },
+  'me senté a su lado y le conté todo lo que había pasado durante el viaje': {
+    en: 'I sat beside her and told her everything that had happened during the trip.',
+    fa: 'کنارش نشستم و همهٔ اتفاقاتی را که در طول سفر افتاده بود برایش تعریف کردم.'
+  },
+  'afuera la tarde se desvanecía lentamente pero dentro de la casa el tiempo parecía haberse detenido': {
+    en: 'Outside, the afternoon was slowly fading, but inside the house time seemed to have stopped.',
+    fa: 'بیرون، عصر کم‌کم رو به پایان می‌رفت، اما داخل خانه انگار زمان از حرکت ایستاده بود.'
+  },
   'cuando llegué a la casa de mi abuela la puerta estaba entreabierta entré despacio y dejé la mochila junto al perchero desde la cocina llegaba un olor delicioso a canela y pan recién horneado eres tú cariño preguntó ella sin levantar la vista de la masa me senté a su lado y le conté todo lo que había pasado durante el viaje afuera la tarde se desvanecía lentamente pero dentro de la casa el tiempo parecía haberse detenido': {
     en: 'When I arrived at my grandmother’s house, the door was ajar. I went in slowly and left my backpack by the coat rack. A delicious smell of cinnamon and freshly baked bread drifted from the kitchen. “Is that you, sweetheart?” she asked without looking up from the dough. I sat beside her and told her everything that had happened during the trip. Outside, the afternoon was slowly fading, but inside the house time seemed to have stopped.',
     fa: 'وقتی به خانهٔ مادربزرگم رسیدم، در نیمه‌باز بود. آهسته وارد شدم و کوله‌پشتی‌ام را کنار جالباسی گذاشتم. بوی دل‌انگیز دارچین و نان تازه از آشپزخانه می‌آمد. —خودتی، عزیزم؟ او بدون اینکه نگاهش را از خمیر بردارد، پرسید. کنارش نشستم و همهٔ اتفاقاتی را که در طول سفر افتاده بود برایش تعریف کردم. بیرون، عصر کم‌کم رو به پایان می‌رفت، اما داخل خانه انگار زمان از حرکت ایستاده بود.'
   }
 };
 const normalizedPhraseTranslations = new Map(Object.entries(phraseTranslations).map(([phrase, translations]) => [normalizeTranslationPhrase(phrase), translations]));
+const offlinePhraseCandidates = [...normalizedPhraseTranslations.entries()]
+  .map(([phrase, translations]) => ({ words: phrase.split(' '), translations }))
+  .sort((a, b) => b.words.length - a.words.length);
 
 function exactPhraseTranslation(text, language) {
   return normalizedPhraseTranslations.get(normalizeTranslationPhrase(text))?.[language] || '';
 }
 
-/* --- Enhanced word translation with verb analysis and enclitic handling --- */
-function splitEnclitic(word) {
-  const lower = normalizeTranslationPhrase(word);
-  const noAccent = stripAccents(lower);
-  const pronouns = ['selas','selos','melas','melos','telas','telos','noslas','noslos','oslas','oslos','sela','selo','mela','melo','tela','telo','nosla','noslo','osla','oslo','me','te','se','le','lo','la','nos','os','les','los','las'];
-  // Try longest first
-  const sorted = [...pronouns].sort((a,b)=>b.length-a.length);
-  for (const pron of sorted) {
-    if (lower.endsWith(pron) && lower.length > pron.length + 2) {
-      const base = word.slice(0, word.length - pron.length);
-      const baseNorm = normalizeTranslationPhrase(base);
-      const baseNoAccent = stripAccents(baseNorm);
-      // Check if base looks like verb infinitive or conjugated form
-      const looksLikeVerb = /(ar|er|ir)$/.test(baseNoAccent) || baseNoAccent.endsWith('ando') || baseNoAccent.endsWith('iendo') || baseNoAccent.endsWith('yendo');
-      let isVerb = looksLikeVerb;
-      if (!isVerb && typeof window.analyzeSpanishVerbs === 'function') {
-        try {
-          const details = window.analyzeSpanishVerbs(base, '', 0);
-          if (details && details.length) isVerb = true;
-        } catch {}
-      }
-      // Also check if base is in verb dictionaries
-      if (!isVerb) {
-        if (verbInfinitiveEn[baseNorm] || verbInfinitiveEn[baseNoAccent] || comprehensiveEn[baseNorm]) {
-          // Could still be verb, but allow
-          isVerb = true;
-        }
-      }
-      if (isVerb || looksLikeVerb) {
-        return { base: base, pronoun: pron, baseNorm, pronNorm: pron };
-      }
-    }
-  }
-  return null;
-}
-
-function getVerbDetailsForWord(word) {
-  if (typeof window.analyzeSpanishVerbs !== 'function') return null;
-  try {
-    const details = window.analyzeSpanishVerbs(word, '', 0);
-    if (details && details.length) return details[0];
-  } catch {}
-  return null;
-}
-
+/* --- Curated offline translation lookup --- */
 function offlineTranslateWordDetailed(word, lang) {
-  const norm = normalizeTranslationPhrase(word);
-  if (!norm) return '';
-  const noAccent = stripAccents(norm);
-  const dict = lang === 'fa' ? comprehensiveFa : comprehensiveEn;
-  // Direct lookup with accent
-  if (dict[norm]) return dict[norm];
-  if (dict[noAccent]) return dict[noAccent];
-  // Original mini dicts for backward compat
-  if (lang === 'en') {
-    if (miniDictionary[norm]) return miniDictionary[norm];
-    if (miniDictionary[noAccent]) return miniDictionary[noAccent];
-  } else {
-    if (farsiDictionary[norm]) return farsiDictionary[norm];
-    if (farsiDictionary[noAccent]) return farsiDictionary[noAccent];
-  }
-  // Verb analysis
-  const detail = getVerbDetailsForWord(word);
-  if (detail) {
-    const infinitiveRaw = detail.infinitive.split(' / ')[0].trim();
-    const infinitive = infinitiveRaw.replace(/se$/,'').trim();
-    const infinitiveNoAccent = stripAccents(infinitive);
-    const baseDict = lang === 'fa' ? verbInfinitiveFa : verbInfinitiveEn;
-    let baseTrans = baseDict[infinitiveRaw] || baseDict[infinitive] || baseDict[infinitiveNoAccent] || '';
-    if (!baseTrans) {
-      // Try comprehensive dict for infinitive
-      baseTrans = dict[infinitive] || dict[infinitiveNoAccent] || '';
-    }
-    if (baseTrans) {
-      if (lang === 'en') {
-        const tense = detail.tense || '';
-        const person = detail.person || '';
-        let subject = '';
-        if (person.includes('1st person singular')) subject = 'I';
-        else if (person.includes('2nd person singular')) subject = 'you';
-        else if (person.includes('3rd person singular')) subject = 'he/she/it';
-        else if (person.includes('1st person plural')) subject = 'we';
-        else if (person.includes('2nd person plural')) subject = 'you (plural)';
-        else if (person.includes('3rd person plural')) subject = 'they';
-        const past = verbPastEn[infinitive] || verbPastEn[infinitiveRaw] || baseTrans.replace(/^to\s+/, '').split(' / ')[0].split(' (')[0];
-        if (tense.includes('Preterite')) {
-          return subject ? `${subject} ${past} (preterite of ${infinitiveRaw}: ${baseTrans}, ${person})` : `${past} (preterite of ${infinitiveRaw}: ${baseTrans}, ${person})`;
-        } else if (tense.includes('Imperfect')) {
-          return subject ? `${subject} was ${past.replace('did / ', '').replace('did','doing')} / used to ${baseTrans.replace(/^to\s+/, '').split(' / ')[0]} (imperfect of ${infinitiveRaw}: ${baseTrans}, ${person})` : `${baseTrans.replace(/^to\s+/, '').split(' / ')[0]} (imperfect of ${infinitiveRaw}: ${baseTrans}, ${person})`;
-        } else if (tense.includes('Present') && !tense.includes('subjunctive')) {
-          const baseVerb = baseTrans.replace(/^to\s+/, '').split(' / ')[0].split(' (')[0];
-          let present = baseVerb;
-          // rough conjugation
-          if (subject === 'he/she/it' && !baseVerb.endsWith('s')) {
-            // simple: add s, handle special cases
-            if (baseVerb === 'do') present = 'does';
-            else if (baseVerb === 'have') present = 'has';
-            else if (baseVerb === 'be') present = 'is';
-            else if (baseVerb === 'go') present = 'goes';
-            else present = baseVerb + 's';
-          } else if (subject === 'I') {
-            if (baseVerb === 'be') present = 'am';
-            else present = baseVerb;
-          } else if (subject === 'we' || subject === 'they' || subject === 'you' || subject === 'you (plural)') {
-            if (baseVerb === 'be') present = subject === 'you' ? 'are' : 'are';
-            else present = baseVerb;
-          }
-          return subject ? `${subject} ${present} (present of ${infinitiveRaw}: ${baseTrans}, ${person})` : `${present} (present of ${infinitiveRaw}: ${baseTrans}, ${person})`;
-        } else if (tense.includes('Future')) {
-          const baseVerb = baseTrans.replace(/^to\s+/, '').split(' / ')[0].split(' (')[0];
-          return subject ? `${subject} will ${baseVerb} (future of ${infinitiveRaw}: ${baseTrans})` : `will ${baseVerb} (future of ${infinitiveRaw}: ${baseTrans})`;
-        } else if (tense.includes('Conditional')) {
-          const baseVerb = baseTrans.replace(/^to\s+/, '').split(' / ')[0].split(' (')[0];
-          return subject ? `${subject} would ${baseVerb} (conditional of ${infinitiveRaw}: ${baseTrans})` : `would ${baseVerb} (conditional of ${infinitiveRaw})`;
-        } else if (tense.includes('Gerund')) {
-          const baseVerb = baseTrans.replace(/^to\s+/, '').split(' / ')[0].split(' (')[0];
-          return `${baseVerb}ing (gerund of ${infinitiveRaw}: ${baseTrans})`;
-        } else if (tense.includes('Past participle')) {
-          const baseVerb = baseTrans.replace(/^to\s+/, '').split(' / ')[0].split(' (')[0];
-          return `${past} / ${baseVerb}ed (past participle of ${infinitiveRaw}: ${baseTrans})`;
-        } else if (tense.includes('Infinitive')) {
-          return baseTrans;
-        } else {
-          return `${baseTrans} (${tense}, ${person})`;
-        }
-      } else {
-        return baseTrans;
-      }
-    }
-  }
-  // Enclitic handling
-  const split = splitEnclitic(word);
-  if (split) {
-    const baseTrans = offlineTranslateWordDetailed(split.base, lang);
-    const pronTrans = lang === 'fa' ? (comprehensiveFa[split.pronoun] || split.pronoun) : (pronounEnMap[split.pronoun] || indirectPronounEnglish[split.pronoun] || comprehensiveEn[split.pronoun] || split.pronoun);
-    if (baseTrans) {
-      if (lang === 'en') {
-        // For hacer + le => to do/make for him/her
-        if (split.base.toLowerCase().includes('hacer') || baseTrans.toLowerCase().includes('do') || baseTrans.toLowerCase().includes('make')) {
-          const baseWithoutTo = baseTrans.replace(/^to\s+/, '').split(' (')[0].split(' / ')[0];
-          const pronEnglish = indirectPronounEnglish[split.pronoun] || pronTrans;
-          return `to ${baseWithoutTo} ${pronEnglish} (from ${word} = ${split.base} + ${split.pronoun}: ${baseTrans} + ${pronTrans})`;
-        }
-        return `${baseTrans} + ${pronTrans} (from ${word} = ${split.base} + ${split.pronoun})`;
-      } else {
-        return `${baseTrans} + ${pronTrans}`;
-      }
-    }
-  }
-  return '';
+  const normalized = normalizeTranslationPhrase(word);
+  if (!normalized || countWords(normalized) !== 1) return '';
+  const dictionary = lang === 'fa' ? comprehensiveFa : comprehensiveEn;
+  // Do not strip accents: el/él, si/sí, tu/tú, and other pairs differ in meaning.
+  if (!Object.prototype.hasOwnProperty.call(dictionary, normalized)) return '';
+  return String(dictionary[normalized] || '').trim();
 }
 
 function offlineTranslateWord(word, lang) {
-  // Keep original simple version for backward compat but delegate to detailed
   return offlineTranslateWordDetailed(word, lang);
 }
 
@@ -1301,145 +1438,25 @@ function offlineTranslateText(text, lang) {
   if (!normalized) return '';
   const exact = exactPhraseTranslation(normalized, lang);
   if (exact) return exact;
-  if (countWords(normalized) === 1) {
-    return offlineTranslateWordDetailed(text, lang) || '';
+  if (countWords(normalized) === 1) return offlineTranslateWordDetailed(text, lang);
+
+  // Never join isolated word glosses into a sentence: without syntax and context,
+  // that produces fluent-looking but often incorrect translations. Every word
+  // in a multiword offline result must belong to a reviewed phrase match.
+  const words = normalized.split(' ');
+  const translations = [];
+  let cursor = 0;
+  while (cursor < words.length) {
+    const match = offlinePhraseCandidates.find(candidate =>
+      candidate.translations[lang]
+      && candidate.words.length <= words.length - cursor
+      && candidate.words.every((word, index) => words[cursor + index] === word)
+    );
+    if (!match) return '';
+    translations.push(match.translations[lang]);
+    cursor += match.words.length;
   }
-  // Improved multi-word translation with phrase matching and pronoun-verb combos
-  const rawTokens = String(text || '').split(/(\s+|[.,;:¡!¿?\"'()[\]{}]+)/);
-  // Preprocess tokens into list of {text, isWord, norm, isSpace, isPunct}
-  const tokens = rawTokens.map(t => {
-    const isSpace = /^\s+$/.test(t);
-    const isPunct = /^[.,;:¡!¿?\"'()[\]{}]+$/.test(t);
-    const isWord = !isSpace && !isPunct && /[\p{L}\p{M}\p{N}]/u.test(t);
-    return { text: t, isSpace, isPunct, isWord, norm: isWord ? normalizeTranslationPhrase(t) : '', noAccent: isWord ? stripAccents(normalizeTranslationPhrase(t)) : '' };
-  });
-
-  let result = [];
-  let i = 0;
-  let translatedCount = 0;
-  let totalWords = tokens.filter(t=>t.isWord).length;
-
-  while (i < tokens.length) {
-    const tok = tokens[i];
-    if (!tok.isWord) {
-      result.push(tok.text);
-      i++;
-      continue;
-    }
-    // Try longest phrase match (up to 6 words)
-    let matched = false;
-    for (let len = 6; len >= 2; len--) {
-      let words = [];
-      let idx = i;
-      let collected = 0;
-      let endIdx = i;
-      let phraseStr = '';
-      while (idx < tokens.length && collected < len) {
-        const cur = tokens[idx];
-        if (cur.isSpace) { idx++; continue; }
-        if (cur.isPunct) break;
-        if (cur.isWord) {
-          words.push(cur.norm);
-          collected++;
-          endIdx = idx;
-        }
-        idx++;
-      }
-      if (words.length === len) {
-        const phrase = words.join(' ');
-        const trans = exactPhraseTranslation(phrase, lang);
-        if (trans) {
-          result.push(trans);
-          // Advance i to after endIdx
-          i = endIdx + 1;
-          translatedCount += len;
-          matched = true;
-          break;
-        }
-      }
-    }
-    if (matched) continue;
-
-    // Check for pronoun-verb combo pattern: se + indirect pronoun + hacer verb
-    if (i + 2 < tokens.length) {
-      // Collect next 3 word tokens ignoring spaces
-      let wordIndices = [];
-      let j = i;
-      while (j < tokens.length && wordIndices.length < 3) {
-        if (tokens[j].isWord) wordIndices.push(j);
-        else if (tokens[j].isPunct) break;
-        j++;
-      }
-      if (wordIndices.length === 3) {
-        const first = tokens[wordIndices[0]];
-        const second = tokens[wordIndices[1]];
-        const third = tokens[wordIndices[2]];
-        const firstNorm = first.norm;
-        const secondNorm = second.norm;
-        const thirdNorm = third.norm;
-        const isSe = firstNorm === 'se';
-        const isIndirect = ['me','te','le','nos','os','les','se'].includes(secondNorm);
-        if (isSe && isIndirect) {
-          const thirdDetail = getVerbDetailsForWord(third.text);
-          const thirdIsHacer = thirdDetail ? thirdDetail.infinitive.includes('hacer') : (thirdNorm.startsWith('hic') || thirdNorm.startsWith('hac') || ['hizo','hice','hace','hacia','hacia','hizo','hizo','hizo','hace','hacen','hacia','haciendo','hecho'].includes(thirdNorm) || thirdNorm === 'hizo' || thirdNorm === 'hizo');
-          if (thirdIsHacer) {
-            // Build contextual translation for se le hizo
-            const pronEn = indirectPronounEnglish[secondNorm] || secondNorm;
-            const verbTrans = offlineTranslateWordDetailed(third.text, lang);
-            let combo;
-            if (lang === 'en') {
-              if (secondNorm === 'me') combo = `it became/seemed to me (from hacerme: ${verbTrans})`;
-              else if (secondNorm === 'te') combo = `it became/seemed to you (from hacerte: ${verbTrans})`;
-              else if (secondNorm === 'le') combo = `it became/seemed to him/her (from hacerle: to do/make for him/her; ${verbTrans})`;
-              else if (secondNorm === 'nos') combo = `it became/seemed to us (from hacernos: ${verbTrans})`;
-              else if (secondNorm === 'os') combo = `it became/seemed to you (plural)`;
-              else if (secondNorm === 'les') combo = `it became/seemed to them (from hacerles: ${verbTrans})`;
-              else combo = `${verbTrans} ${pronEn}`;
-            } else {
-              combo = verbTrans || third.text;
-            }
-            result.push(combo);
-            i = wordIndices[2] + 1;
-            translatedCount += 3;
-            continue;
-          }
-        }
-        // Also check pattern se + hacer verb (without indirect)
-        if (firstNorm === 'se') {
-          const secondDetail = getVerbDetailsForWord(second.text);
-          const secondIsHacer = secondDetail ? secondDetail.infinitive.includes('hacer') : (secondNorm.startsWith('hic') || secondNorm.startsWith('hac'));
-          if (secondIsHacer) {
-            const verbTrans = offlineTranslateWordDetailed(second.text, lang);
-            let combo = lang === 'en' ? `it became / it was made (from hacerse: to become; ${verbTrans})` : verbTrans;
-            result.push(combo);
-            i = wordIndices[1] + 1;
-            translatedCount += 2;
-            continue;
-          }
-        }
-      }
-    }
-
-    // Single word detailed translation
-    const singleTrans = offlineTranslateWordDetailed(tok.text, lang);
-    if (singleTrans) {
-      result.push(singleTrans);
-      translatedCount++;
-    } else {
-      // Keep original if no translation, but mark as untranslated
-      result.push(tok.text);
-    }
-    i++;
-  }
-
-  const out = result.join('');
-  // Return if we translated at least one word or if out differs meaningfully
-  if (translatedCount > 0) {
-    return out;
-  }
-  // If no word translated but we have exact phrase, already returned
-  // Otherwise return empty to allow online fallback
-  return '';
+  return translations.join(' ');
 }
 
 function offerTranslation(text) {
@@ -1481,8 +1498,9 @@ function syncFarsiControls() {
   if (field) field.hidden = !enabled;
 }
 
-/* v2: live translation service with improved offline quality */
-const LIVE_TRANSLATION_CACHE_KEY = 'lumbre-live-translation-cache-v2';
+/* Live translation: reviewed offline matches first, online lookup when no match exists. */
+// v4 invalidates cached results for verbs that now have reviewed English glosses.
+const LIVE_TRANSLATION_CACHE_KEY = 'lumbre-live-translation-cache-v4';
 const LIVE_TRANSLATION_MAX_CHUNK = 450;
 let liveTranslationCache = {};
 let liveTranslationRequestId = 0;
@@ -1574,20 +1592,9 @@ async function translateChunk(text, targetLang) {
   if (cached && cached.text) return { text: cached.text, source: cached.source || 'cache' };
   const offline = offlineTranslateText(text, targetLang);
   if (offline) {
+    // Keep a reviewed offline match stable; do not silently replace it with an
+    // unreviewed machine translation in the background.
     setCachedTranslation(text, targetLang, offline, 'offline');
-    // For longer texts, try online in background but prefer offline if it's a hacerle construction that online mistranslates
-    const lower = normalizeTranslationPhrase(text);
-    const isHacerleConstruction = lower.includes('se le hizo') || lower.includes('se me hizo') || lower.includes('hacerle') || lower.includes('se hizo') || lower.includes('se me hace');
-    if (state.settings.liveTranslationOnline && navigator.onLine !== false && countWords(text) > 1 && !isHacerleConstruction) {
-      fetchOnlineTranslation(text, targetLang).then(online => {
-        if (online && normalizeTranslationPhrase(online) !== normalizeTranslationPhrase(text)) {
-          // Only overwrite if online is not obviously worse
-          if (!online.toLowerCase().includes('it is worked')) {
-            setCachedTranslation(text, targetLang, online, 'online');
-          }
-        }
-      }).catch(() => {});
-    }
     return { text: offline, source: 'offline' };
   }
   if (!state.settings.liveTranslationOnline || navigator.onLine === false) {
@@ -1761,11 +1768,11 @@ async function renderLiveTranslation(force = false) {
     const isOnline = result.source === 'online' || result.source === 'mixed';
     const hasError = result.source === 'error' || result.source === 'partial-error';
     const statusMessages = {
-      online: `Live online • ${result.chunks} segments • cached for offline`,
-      mixed: `Online + offline dictionary • ${result.chunks} segments`,
-      offline: `Offline dictionary • ${result.chunks} segments • contextual (verb-aware) translations`,
-      'offline-missing': 'Offline mode — no built-in translation is available for this passage.',
-      'partial-offline': 'Offline mode — some segments are still in Spanish. Connect and refresh for online translation.',
+      online: `Online result • check in context • ${result.chunks} segments • cached for offline`,
+      mixed: `Online + reviewed offline matches • check online segments • ${result.chunks} segments`,
+      offline: `Offline dictionary • ${result.chunks} reviewed matches`,
+      'offline-missing': 'Offline mode — no reviewed translation is available; the original Spanish is shown.',
+      'partial-offline': 'Offline mode — unmatched segments remain in Spanish. Connect and refresh for online translation.',
       error: 'Could not reach the translation service. Check your connection and refresh.',
       'partial-error': 'Some segments could not be translated online. Check your connection and refresh.'
     };
@@ -1782,25 +1789,6 @@ async function renderLiveTranslation(force = false) {
     status.className = 'live-translation-status error';
     if (badge) { badge.textContent = 'error'; badge.className = 'live-badge error'; }
   }
-}
-
-function buildWordBreakdown(text, lang) {
-  const words = String(text || '').trim().split(/\s+/).filter(Boolean);
-  if (words.length <= 1 || words.length > 12) return '';
-  const breakdown = words.map(w => {
-    const clean = w.replace(/[.,;:¡!¿?\"'()]/g, '');
-    const trans = offlineTranslateWordDetailed(clean, lang);
-    if (trans && trans.toLowerCase() !== clean.toLowerCase()) {
-      // Shorten for display
-      const short = trans.split(' (')[0].split(' / ')[0];
-      return `${escapeHtml(clean)} → ${escapeHtml(short)}`;
-    }
-    return '';
-  }).filter(Boolean);
-  if (breakdown.length) {
-    return `<div class="word-breakdown">${breakdown.map(b=>`<span class="breakdown-item">${b}</span>`).join(' • ')}</div>`;
-  }
-  return '';
 }
 
 async function translateSelectionLive(text) {
@@ -1830,18 +1818,18 @@ async function translateSelectionLive(text) {
     const res = await translateChunk(trimmed, lang);
     if (requestId !== selectionLiveRequestId) return;
     if (res.text) {
-      const breakdown = buildWordBreakdown(trimmed, lang);
-      textEl.innerHTML = `${escapeHtml(res.text)}${breakdown}`;
+      textEl.textContent = res.text;
       textEl.setAttribute('lang', lang);
-      const isHacerle = normalizeTranslationPhrase(trimmed).includes('se le hizo') || normalizeTranslationPhrase(trimmed).includes('hacerle');
-      statusEl.textContent = isHacerle ? 'Contextual translation (hacerle construction) • Offline dictionary (verb-aware)' : (res.source === 'online' ? 'Live online translation' : 'Offline dictionary (contextual, verb-aware) match');
+      statusEl.textContent = res.source === 'online'
+        ? 'Live online translation — check the result in context'
+        : 'Reviewed offline word/phrase match';
       if (badgeEl) {
         badgeEl.textContent = res.source === 'online' ? 'live' : 'offline';
         badgeEl.className = res.source === 'online' ? 'live-badge online' : 'live-badge';
       }
     } else if (res.source === 'offline-missing') {
-      textEl.textContent = lang === 'fa' ? 'ترجمهٔ آفلاین یافت نشد. آنلاین را امتحان کنید.' : 'No built-in translation is available for this selection.';
-      statusEl.textContent = 'Offline mode — no built-in match. Reconnect to get an online translation.';
+      textEl.textContent = lang === 'fa' ? 'ترجمهٔ آفلاین یافت نشد. آنلاین را امتحان کنید.' : 'No reviewed offline translation is available for this selection.';
+      statusEl.textContent = 'No reviewed offline match. Reconnect to request an online translation.';
       if (badgeEl) { badgeEl.textContent = 'offline'; badgeEl.className = 'live-badge'; }
     } else {
       textEl.textContent = 'The translation service could not be reached.';
@@ -1860,15 +1848,19 @@ function migrateSavedTranslations() {
   let changed = false;
   let phrasesNeedingReview = 0;
   state.passages.forEach(passage => passage.highlights.forEach(highlight => {
-    if (highlight.translationVersion === 2) return;
-    // Fill missing translations from exact matches; flag uncertain legacy phrases
-    // for review without discarding existing user-entered translations.
+    if (highlight.translationVersion === 4) return;
+    // Fill missing translations from exact matches and flag legacy values that
+    // conflict with the reviewed glossary, without discarding user-entered text.
     const previousTranslation = String(highlight.translation || '').trim();
     // Never erase a user's saved translation during an app update.
     highlight.translation = previousTranslation || offerTranslation(highlight.phrase);
     highlight.translationFa = highlight.translationFa || suggestFarsiTranslation(highlight.phrase);
-    if (previousTranslation && countWords(highlight.phrase) > 1 && !offerTranslation(highlight.phrase)) phrasesNeedingReview += 1;
-    highlight.translationVersion = 2;
+    const currentSuggestion = offerTranslation(highlight.phrase);
+    const knownSuggestionChanged = currentSuggestion
+      && normalizeTranslationPhrase(previousTranslation) !== normalizeTranslationPhrase(currentSuggestion);
+    const unreviewedLegacyPhrase = countWords(highlight.phrase) > 1 && !currentSuggestion;
+    if (previousTranslation && (knownSuggestionChanged || unreviewedLegacyPhrase)) phrasesNeedingReview += 1;
+    highlight.translationVersion = 4;
     changed = true;
   }));
   if (changed) save();
@@ -1915,7 +1907,7 @@ async function lookupEnglishTranslation(force = false) {
   const cached = getCachedTranslation(phrase, 'en');
   if (!force && cached?.source === 'online' && cached.text) {
     if (!englishTranslationTouched && !field.value.trim()) field.value = cached.text;
-    setEnglishTranslationStatus('A previously fetched online translation was filled from this device’s cache.', 'success');
+    setEnglishTranslationStatus('A cached online suggestion was filled. Review it in context before using it.', 'success');
     syncEnglishTranslationSaveButton();
     return;
   }
@@ -2449,7 +2441,7 @@ $('saveHighlight').addEventListener('click', () => {
     if (highlight) {
       highlight.translation = translation;
       highlight.translationFa = translationFa;
-      highlight.translationVersion = 2;
+      highlight.translationVersion = 4;
       highlight.explanation = explanation;
     }
     closeHighlightModal(false);
@@ -2483,7 +2475,7 @@ $('saveHighlight').addEventListener('click', () => {
     end,
     translation,
     translationFa,
-    translationVersion: 2,
+    translationVersion: 4,
     explanation,
     verbDetails,
     cards: { 'es-en': 0, 'en-es': 0 },
@@ -2660,25 +2652,38 @@ $('addVerbForm').addEventListener('submit', event => {
   event.preventDefault();
   const bank = verbBank();
   const input = $('addVerbInput');
+  const glossInput = $('addVerbGlossInput');
   if (!bank) return;
   const wanted = input.value.split(/[,\n;]+|\s{2,}/).map(part => part.trim().toLowerCase()).filter(Boolean);
   if (!wanted.length) {
     showToast('Type one or more infinitives, like escribir, volver');
     return;
   }
+  const glossText = String(glossInput?.value || '').trim();
+  const glosses = !glossText ? [] : (wanted.length === 1
+    ? [glossText]
+    : glossText.split(/\s*;\s*/).map(gloss => gloss.trim()).filter(Boolean));
+  if (wanted.length > 1 && glossText && glosses.length !== wanted.length) {
+    showToast('Enter one English meaning per verb, separated by semicolons.');
+    return;
+  }
   const added = [];
   const skipped = [];
-  wanted.forEach(lemma => {
+  wanted.forEach((lemma, index) => {
     const entry = bank.add(lemma);
     if (!entry) {
       skipped.push(lemma);
       return;
     }
+    const base = entry.infinitive.replace(/se$/, '');
+    const hasReviewedGloss = Boolean(verbInfinitiveEn[entry.infinitive] || verbInfinitiveEn[base]);
+    if (glosses[index] && !hasReviewedGloss) state.customVerbGlosses[entry.infinitive] = glosses[index];
     if (!state.customVerbs.includes(entry.infinitive)) state.customVerbs.push(entry.infinitive);
     const result = upsertVerbCard(entry.infinitive);
     if (result) added.push(entry.infinitive);
   });
   input.value = '';
+  if (glossInput) glossInput.value = '';
   renderVerbs();
   showToast(skipped.length
     ? `Not recognised as verbs: ${skipped.join(', ')}`
@@ -2750,5 +2755,5 @@ syncFarsiControls();
 syncLiveTranslationControls();
 render();
 if (phrasesNeedingTranslationReview) {
-  showToast(`${phrasesNeedingTranslationReview} old phrase translation${phrasesNeedingTranslationReview === 1 ? '' : 's'} need full-context review`);
+  showToast(`${phrasesNeedingTranslationReview} saved translation${phrasesNeedingTranslationReview === 1 ? '' : 's'} may need review`);
 }
